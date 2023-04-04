@@ -1,7 +1,7 @@
 /* 
     Flight computer for ME 235 project
 
-    Last updated 3/15/2023 (unfinished)
+    Last updated 4/4/2023 (unfinished)
 */
 #include <stdio.h>
 #include "driver/ledc.h"
