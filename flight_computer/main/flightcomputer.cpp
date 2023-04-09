@@ -4,6 +4,8 @@
     Last updated 4/6/2023 (unfinished)
 */
 #include <stdio.h>
+#include <string.h>
+
 #include "driver/ledc.h"
 #include "esp_err.h"
 #include "freertos/FreeRTOS.h"
@@ -83,9 +85,9 @@ SSD1306_t screen;
 int center, top, bottom;
 char lineChar[20];
 
-// State machine variable(s)
-volatile int state = 0; // 0 = idle, 1 = connected to remote, 2 = fly, 3 = auto hover, 4 = calibration mode
-volatile bool landed = true; // whether the aviation is on the ground 
+// Global state machine variable(s) - will we still use?
+volatile int _state = 0; // 0 = idle, 1 = connected to remote, 2 = fly, 3 = auto hover, 4 = calibration mode
+volatile bool _landed = true; // whether the aviation is on the ground 
                              // starts as true, but will be judged using accelerometer jolt in flight
                              
 // Variables with regards to state estimation
@@ -129,7 +131,7 @@ static void example_ledc_init(void)
 }
 
 /// @brief Initialize I2C master for transmitting data to flight computer
-void i2c_FC_init() {
+static void i2c_FC_init() {
     // Configure the I2C master interface
     i2c_config_t conf;
     conf.mode = I2C_MODE_MASTER; // (is master for flight computer, slave for datalink computer)
@@ -144,7 +146,7 @@ void i2c_FC_init() {
 }
 
 /// @brief Initialize I2C slave for transmitting data to datalink computer
-void i2c_DL_init() {
+static void i2c_DL_init() {
 /*     // Configure the I2C slave interface
     i2c_config_t conf;
     conf.mode = I2C_MODE_SLAVE; // (is slave for flight computer, master for datalink computer)
@@ -157,47 +159,10 @@ void i2c_DL_init() {
     i2c_driver_install(I2C_NUM_1, conf.mode, 128, 128, 0); */
 }
 
-/// @brief For updating the LCD screen with relevant information 
-/// (I think it is rate-limited because the screen has a slower refresh rate than the other sub-systems)
-/// @param param 
-static void update_LCD(void* param)
+/// @brief Turn on the connection that will be used to contact the remote
+static void ESP_NOW_init()
 {
-    TickType_t lastTaskTime = xTaskGetTickCount();
-    const TickType_t delay_time = pdMS_TO_TICKS(150);
 
-    while(true)
-    {
-        switch (state)
-        {
-            case 0:
-                LCD_disp("STATE 0",0,false);
-                LCD_disp("NO-REMOTE",1,false);
-                //LCD_disp("...",2,false);
-                LCD_disp("CNTRL-OFF",3,false);
-                LCD_disp("MOT-INACTIVE",4,false); 
-                break;
-            case 1:
-                LCD_disp("STATE 0",0,false);
-                LCD_disp("RMT-HNDSHK",1,false);
-                //LCD_disp("IMU-ACTIVE",2,false);
-                LCD_disp("CNTRL-...",3,false);
-                LCD_disp("MOT-AWAIT-ENG-START",4,true);
-                break;
-            case 2:
-                break;
-            case 3:
-                break;
-            case 4:
-                break;
-            default:
-                // It should never reach this case...
-                break;
-        }
-
-        vTaskDelayUntil(&lastTaskTime, delay_time);
-    }
-
-    vTaskDelete(null);
 }
 
 /// @brief LCD screen
@@ -205,22 +170,9 @@ static void LCD_init()
 {
     screen._address = ADDR_LCD_SCREEN;
     i2c_init(&screen, 128, 32);
-
-/*     while(true)
-    {
-        top = 1;
-        center = 1;
-        bottom = 4;
-        ssd1306_display_text(&screen, 0, "STATE = "+ (char)(state+'O'), 14, false);
-        ssd1306_display_text(&screen, 1, "Y = "+ (char)(ypr[0]+'O'), 13, false);
-        //ssd1306_clear_line(&dev, 2, true);
-        //ssd1306_clear_line(&dev, 3, true);
-        ssd1306_display_text(&screen, 2, "P = "+ (char)(ypr[1]+'O'), 14, false);
-        ssd1306_display_text(&screen, 3, "R = "+ (char)(ypr[2]+'O'), 13, false); 
-	} */
 }
 
-static void LCD_disp(char * msg, uint8_t line, bool backlight)
+static void LCD_disp(char *msg, uint8_t line, bool backlight)
 {
     ssd1306_display_text(&screen, line, msg, 20, backlight);
 }
@@ -238,22 +190,72 @@ static int ThrottlePercentToPWM(float percentage)
     return (int)(ENGINE_PWM_MIN + percentage/100.0f*(ENGINE_PWM_MAX-ENGINE_PWM_MIN)); 
 }
 
-/// @brief Check connection to remote control (Every 2 ms) 
+/// @brief For updating the LCD screen with relevant information 
+/// (I think it is rate-limited because the screen has a slower refresh rate than the other sub-systems)
+/// @param param 
+static void update_LCD(void* param)
+{
+    TickType_t lastTaskTime = xTaskGetTickCount();
+    const TickType_t delay_time = pdMS_TO_TICKS(150);
+
+    uint8_t state = 0;
+
+    char YPRstr[16];
+
+    while(true)
+    {
+        switch (state)
+        {
+            case 0:
+                LCD_disp("STATE 0          ",0,false);
+                LCD_disp("NO-REMOTE        ",1,false);
+                snprintf(YPRstr, sizeof(YPRstr), "Y%.1fP%.1fR%.1f", ypr[0]* 180/M_PI, ypr[1]* 180/M_PI, ypr[2]* 180/M_PI);
+                LCD_disp(YPRstr,2,false);
+                LCD_disp("MOT-CNTRL-OFF    ",3,false);
+                break;
+            case 1:
+                LCD_disp("STATE 0          ",0,false);
+                LCD_disp("RMT-HNDSHK       ",1,false);
+                LCD_disp("A                ",2,false);
+                LCD_disp("AWAT-ENG-START   ",3,true); 
+                break;
+            case 2:
+                break;
+            case 3:
+                break;
+            case 4:
+                break;
+            default:
+                // It should never reach this case...
+                break;
+        }
+
+        vTaskDelayUntil(&lastTaskTime, delay_time);
+    }
+
+    vTaskDelete(NULL);
+}
+
+/// @brief Check connection to remote control and process remote output (Every 25 ms)
+/// The longer delay should be ok as it is still much faster than a human reaction time
+/// What really matters is that the control loop is fast enough, which is handled in other sections of the code... 
 /// @param pvParam 
 static void remote_conn(void* pvParam)
 {
     TickType_t lastTaskTime = xTaskGetTickCount();
-    const TickType_t delay_time = pdMS_TO_TICKS(15);
+    const TickType_t delay_time = pdMS_TO_TICKS(25);
+
+    uint8_t state = 0;
     
     while(true)
     {
         switch (state)
         {
             case 0:
-                ESP_LOGI("[RC-INFO]", "Awaiting connection!");
+                //ESP_LOGI("[RC-INFO]", "Awaiting connection!");
                 break;
             case 1:
-                ESP_LOGI("[RC-INFO]", "Connected! Awaiting engine start...");
+                //ESP_LOGI("[RC-INFO]", "Connected! Awaiting engine start...");
                 break;
             case 2:
                 // Engine on, now the remote is actually in use
@@ -278,17 +280,19 @@ static void remote_conn(void* pvParam)
 static void motors(void* pvParam)
 {
     TickType_t lastTaskTime = xTaskGetTickCount();
-    const TickType_t delay_time = pdMS_TO_TICKS(8);
+    const TickType_t delay_time = pdMS_TO_TICKS(15);
+
+    uint8_t state = 0;
 
     while(true)
     {
         switch (state)
         {
             case 0:
-                ESP_LOGI("[MOT-INFO]", "Motors idle - awaiting remote connection!");
+                //ESP_LOGI("[MOT-INFO]", "Motors idle - awaiting remote connection!");
                 break;
             case 1:
-                ESP_LOGI("[MOT-INFO]", "Connected to remote! Awaiting engine start...");
+                //ESP_LOGI("[MOT-INFO]", "Connected to remote! Awaiting engine start...");
                 break;
             case 2:
                 break;
@@ -311,6 +315,9 @@ static void IMU(void* pvParam)
 {
     TickType_t lastTaskTime = xTaskGetTickCount();
     const TickType_t delay_time = pdMS_TO_TICKS(10);
+    
+    uint8_t state = 0;
+    
     /* // Following are for the state measurement (Not anymore!!)
     mpu6050_handle_t mpu6050_dev = NULL;
     mpu6050_acce_value_t acce;
@@ -363,11 +370,11 @@ static void IMU(void* pvParam)
 			mpu.dmpGetGravity(&gravity, &q);
 			mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
 
-			printf("YAW: %3.1f, ", ypr[0] * 180/M_PI); // This can be put into sprintf instead to display on screen
+			/* printf("YAW: %3.1f, ", ypr[0] * 180/M_PI); 
 			printf("PITCH: %3.1f, ", ypr[1] * 180/M_PI);
-			printf("ROLL: %3.1f \n", ypr[2] * 180/M_PI);
+			printf("ROLL: %3.1f \n", ypr[2] * 180/M_PI); */
  
-            LCD_disp("Y: %3.1f, " + ypr[0],2,false);
+            //LCD_disp("Y: %3.1f, " + ypr[0],2,false);
 	    }
 
 	    //Best result is to match with DMP refresh rate
@@ -386,7 +393,7 @@ static void IMU(void* pvParam)
 static void LQI(void* pvParam)
 {
     TickType_t lastTaskTime = xTaskGetTickCount();
-    const TickType_t delay_time = pdMS_TO_TICKS(13);
+    const TickType_t delay_time = pdMS_TO_TICKS(15);
 
     while(true)
     {
@@ -420,19 +427,27 @@ extern "C" void app_main(void)
 {
     i2c_DL_init(); // Start I2C bus to data link with error check
     i2c_FC_init(); // Start I2C bus to flight computer with error check
-    LCD_init();
 
-    LCD_disp("Complete I2C    ",0,false); // Confirm successful I2C start
-    LCD_disp("init...         ",1,false); 
-    LCD_disp("Starting all    ",2,false);
-    LCD_disp("tasks...        ",3,false);
+    LCD_init();
     
-    vTaskDelay(1000/portTICK_PERIOD_MS); // Wait 1 second so that you can actually read the message
+    LCD_disp("LCD_init OK    ",0,false); // Confirm successful I2C start
+    vTaskDelay(500/portTICK_PERIOD_MS);
+    LCD_disp("I2C_init OK    ",1,false);
+
+    ESP_NOW_init();
+
+    LCD_disp("ESP_NOW_init OK",2,false);
+
+    vTaskDelay(500/portTICK_PERIOD_MS);
+    LCD_disp("START TASKS    ",3,false);
+   
+    vTaskDelay(1000/portTICK_PERIOD_MS);
 
     xTaskCreatePinnedToCore(IMU, "IMU", 4096, (void*) 1, 7, NULL, 0); // Task for reading IMU sensors
     xTaskCreatePinnedToCore(remote_conn, "remote_conn", 4096, (void*) 1, 4, NULL, 0); // Task for remote control (will listen in the background)
-    xTaskCreatePinnedToCore(update_LCD, "update_LCD", 4096, (void*) 1, 2, NULL, 0); // Task for screen update
     
+    xTaskCreatePinnedToCore(update_LCD, "update_LCD", 4096, (void*) 1, 2, NULL, 1); // Task for screen update
+
     xTaskCreatePinnedToCore(LQI, "LQI", 4096, (void*) 1, 5, NULL, 1); // Control algorithm
     xTaskCreatePinnedToCore(motors, "motors", 4096, (void*) 1, 10, NULL, 1); // Motor actuation is on core 1
 }
