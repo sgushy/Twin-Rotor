@@ -41,6 +41,7 @@
 
 #define ENGINE_PWM_MAX              6554 // 10% of 2^16, corresponds to full throttle (2 ms pulse width)
 #define ENGINE_PWM_MIN              3277 // 5% of 2^16, corresponds to no throttle (1 ms pulse width)
+
 // Prepare and then apply the LEDC PWM timer configuration
 ledc_timer_config_t ledc_timer_left = {
     .speed_mode       = LEDC_MODE,
@@ -62,9 +63,10 @@ ledc_channel_config_t ledc_channel_left = {
 };
 
 // Define PWM parameters (for servo control)
-#define LEDC_SERVO_FREQUENCY          1000 // 1 kHz for servo PWM frequency, this is because servo PWM uses RMS voltage
-#define SERVO_PWM_MIN                 0
-#define SERVO_PWM_MAX                 8195
+#define LEDC_SERVO_FREQUENCY          50 
+#define SERVO_PWM_MIN                 3277
+#define SERVO_PWM_MAX                 6554
+#define SERVO_PWM_MID                 4916
 
 // Define I2C parameters - Note: ESP32 can handle 2 I2C ports natively
 // but we will need to make sure that it can handle simultaneous broadcast/receive
@@ -80,10 +82,33 @@ ledc_channel_config_t ledc_channel_left = {
 //#define ADDR_IMU_R           0x69 // Secondary IMU memory address for I2C connection (will no longer be used, only 1 IMU is decided)
 #define ADDR_LCD_SCREEN      0x3c // Address of the LCD screen (may or may not be used in the final product)
 
+#define LQI_PERIOD_MS        50 // Period to discretize LQI execution time by   
+#define IMU_PERIOD_MS        41
+
+#define MAX_THRUST_N         16.778f // max thrust per propeller in newtons
+
 // LCD screen vars
 SSD1306_t screen;
 int center, top, bottom;
 char lineChar[20];
+
+// LQI gains matrix K (4x9)
+const float K[4][9] = {{0.0273, 0.0158, 0, 0, -1.2423, -0.7381, -0.0157, 0, 0.7069},
+                        {-0.0273, -0.0158, 0, 0, 1.2423, 0.7381, 0.0157, 0, -0.7069},
+                        {-1.2693, -0.7861, -1.3094, -0.8588, -0.0287, -0.0182, 0.7069, 0.7071, 0.0157},
+                        {1.2693, 0.7861, -1.3094, -0.8588, 0.0287, 0.0182, -0.7069, 0.7071, -0.0157}};
+
+// Current angle targets (provided by ground station)
+float ypr_target[3] = {0, 0, 0};
+
+// Integrator values for state angles
+float ypr_accum[3] = {0, 0, 0};
+
+// Derivatives of state angles
+float ypr_prime[3] = {0, 0, 0};
+
+// Old values for each angle, for calculating derivatives
+float ypr_old[3] = {0, 0, 0};
 
 // Global state machine variable(s) - will we still use?
 volatile int _state = 0; // 0 = idle, 1 = connected to remote, 2 = fly, 3 = auto hover, 4 = calibration mode
@@ -105,17 +130,14 @@ volatile long _lastCommunicationWithRemote = 0; // Last time we heard from remot
 volatile uint8_t _remoteMACAddr = 0; // MAC address of remote (will be detected during remote ping/proximity scan)
 
 // The commanded angles and yaw rate will be received from the remote (based on position of remote controller)
-volatile float _cmdPitch = 0; // Pitch will be an absolute value (0 = level)
-volatile float _cmdRoll = 0; // Roll will be an absolute value (0 = level)
-volatile float _cmdYawRate = 0; // Yaw will be only a rate because it cannot be really be stabilized with the onboard sensors
 volatile float _cmdThrottlePercentage = 0; // Throttle strength in percent
 
 // The following variables are to be used for the control loop
 // these are to be converted from the commanded pitch/roll/yaw/throttle to values that are 
-volatile uint8_t _forcePercentageLeft = 50; // Commanded % of total thrust by left motor compared to current throttle input
-volatile uint8_t _forcePercentageRight = 50; // Commanded % of total thrust by right motor compared to current throttle input
-volatile uint8_t _reqServoLeft = 0; // Commanded servo angle - used for PITCH - will convert to PWM
-volatile uint8_t _reqServoRight = 0; // Commanded servo angle - used for YAW - will convert to PWM
+volatile uint8_t _forcePercentageLeft = 0; // Commanded % of left thrust, added to open loop thrust
+volatile uint8_t _forcePercentageRight = 0; // Commanded % of left thrust, added to open loop thrust
+volatile uint8_t _reqServoLeft = 0; // Commanded servo angle in radians - used for PITCH - will convert to PWM
+volatile uint8_t _reqServoRight = 0; // Commanded servo angle in radians - used for YAW - will convert to PWM
 
 // Throttle and servo duty cycles - The control loop calculates these, which will then be read by motor-running task
 // to set the motor powers and servo angles - Initialize at zero so that the aircraft does not try to take off for some reason
@@ -314,7 +336,7 @@ static void motors(void* pvParam)
 static void IMU(void* pvParam)
 {
     TickType_t lastTaskTime = xTaskGetTickCount();
-    const TickType_t delay_time = pdMS_TO_TICKS(10);
+    const TickType_t delay_time = pdMS_TO_TICKS(IMU_PERIOD_MS);
     
     uint8_t state = 0;
     
@@ -368,7 +390,9 @@ static void IMU(void* pvParam)
 	        mpu.getFIFOBytes(fifoBuffer, packetSize);
 	 		mpu.dmpGetQuaternion(&q, fifoBuffer);
 			mpu.dmpGetGravity(&gravity, &q);
+            for (int i = 0; i < 3; i++) {ypr_old[i] = ypr[i];}
 			mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
+            for (int i = 0; i < 3; i++) {ypr_prime[i] = (ypr[i] - ypr_old[i])/(IMU_PERIOD_MS/1000);}
 
 			/* printf("YAW: %3.1f, ", ypr[0] * 180/M_PI); 
 			printf("PITCH: %3.1f, ", ypr[1] * 180/M_PI);
@@ -393,8 +417,10 @@ static void IMU(void* pvParam)
 static void LQI(void* pvParam)
 {
     TickType_t lastTaskTime = xTaskGetTickCount();
-    const TickType_t delay_time = pdMS_TO_TICKS(15);
+    const TickType_t delay_time = pdMS_TO_TICKS(LQI_PERIOD_MS);
     uint8_t state = 0;
+    float u[4] = {0, 0, 0, 0};
+    float x[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
     
     while(true)
     {
@@ -408,6 +434,42 @@ static void LQI(void* pvParam)
                 // At least for the servos range of motion
                 break;
             case 2:
+                // Fly state
+                // update accumulator values
+                for (int i = 0; i < 3; i++) {
+                    ypr_accum[i] += (ypr_target[i] - ypr[i]) * LQI_PERIOD_MS / 1000;
+                }
+
+                // first zero u
+                for (int i = 0; i < 4; i++) {
+                    u[i] = 0;
+                }
+                x[0] = ypr[0];
+                x[1] = ypr_prime[0];
+                x[2] = ypr[1];
+                x[3] = ypr_prime[1];
+                x[4] = ypr[2];
+                x[5] = ypr_prime[2];
+                x[6] = ypr_accum[0];
+                x[7] = ypr_accum[1];
+                x[8] = ypr_accum[2];
+                // multiply by K matrix to obtain u
+
+                for (int i = 0; i < 4; i++) {
+                    for (int j = 0; j < 9; j++) {
+                        u[i] += K[i][j] * x[j];
+                    }
+                }
+
+                // operate on u to get thrusts and angles
+                _throttleRight = u[0] / MAX_THRUST_N * (ENGINE_PWM_MAX - ENGINE_PWM_MIN)
+                    + ENGINE_PWM_MIN;
+                _throttleLeft = u[1] / MAX_THRUST_N * (ENGINE_PWM_MAX - ENGINE_PWM_MIN)
+                    + ENGINE_PWM_MIN; 
+                _servoRight = u[2] / (u[0] * 1.570796f) * (SERVO_PWM_MAX - SERVO_PWM_MIN) 
+                    + SERVO_PWM_MID;
+                _servoLeft = u[3] / (u[1] * 1.570796f) * (SERVO_PWM_MAX - SERVO_PWM_MIN)
+                    + SERVO_PWM_MID;
                 break;
             case 3:
                 break;
