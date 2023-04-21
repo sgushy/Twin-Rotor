@@ -152,7 +152,6 @@ uint16_t packetSize = 42;    // expected DMP packet size (default is 42 bytes)
 uint16_t fifoCount;     // count of all bytes currently in FIFO
 uint8_t fifoBuffer[64]; // FIFO storage buffer
 uint8_t mpuIntStatus;   // holds actual interrupt status byte from MPU
-uint8_t status = 0;
 
 // Variables with regards to connection to remote
 volatile bool _receivedRemoteHandshake = false; // Have we connected to the remote?
