@@ -1,6 +1,5 @@
 /* 
     Flight computer for twin rotor helicopter
-
     Last updated 4/6/2023 (unfinished)
 */
 #include <stdio.h>
@@ -153,6 +152,7 @@ uint16_t packetSize = 42;    // expected DMP packet size (default is 42 bytes)
 uint16_t fifoCount;     // count of all bytes currently in FIFO
 uint8_t fifoBuffer[64]; // FIFO storage buffer
 uint8_t mpuIntStatus;   // holds actual interrupt status byte from MPU
+uint8_t status = 0;
 
 // Variables with regards to connection to remote
 volatile bool _receivedRemoteHandshake = false; // Have we connected to the remote?
@@ -178,8 +178,8 @@ volatile uint32_t _servoRight = SERVO_PWM_MIN;
 
 static void example_ledc_init(void)
 {
-    ESP_ERROR_CHECK(ledc_timer_config(&ledc_timer_left));
-    ESP_ERROR_CHECK(ledc_channel_config(&ledc_channel_left));
+    //ESP_ERROR_CHECK(ledc_timer_config(&ledc_timer_left));
+    //ESP_ERROR_CHECK(ledc_channel_config(&ledc_channel_left));
 }
 
 /// @brief Initialize I2C master for transmitting data to flight computer
@@ -384,7 +384,6 @@ static void IMU(void* pvParam)
     mpu6050_acce_value_t acce;
     mpu6050_gyro_value_t gyro;
     complimentary_angle_t complimentary_angle;
-
     // Initialize MPU-6050 sensor
     mpu6050_dev = mpu6050_create(I2C_NUM_0, ADDR_IMU_F);
     mpu6050_config(mpu6050_dev, ACCE_FS_4G, GYRO_FS_500DPS);
@@ -500,9 +499,9 @@ static void LQI(void* pvParam)
                 }
 
                 // operate on u to get thrusts and angles
-                _throttleRight = state == 4 ? 0 : u[0] / MAX_THRUST_N * (ENGINE_PWM_MAX - ENGINE_PWM_MIN)
+                _throttleRight = _state == 4 ? 0 : u[0] / MAX_THRUST_N * (ENGINE_PWM_MAX - ENGINE_PWM_MIN)
                     + ENGINE_PWM_MIN;
-                _throttleLeft = state == 4 ? 0 : u[1] / MAX_THRUST_N * (ENGINE_PWM_MAX - ENGINE_PWM_MIN)
+                _throttleLeft = _state == 4 ? 0 : u[1] / MAX_THRUST_N * (ENGINE_PWM_MAX - ENGINE_PWM_MIN)
                     + ENGINE_PWM_MIN; 
                 _servoRight = u[2] / (u[0] * 1.570796f) * (SERVO_PWM_MAX - SERVO_PWM_MIN) 
                     + SERVO_PWM_MID;
