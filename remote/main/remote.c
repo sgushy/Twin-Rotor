@@ -18,7 +18,10 @@
 
 #include "sdkconfig.h"
 
-#include "ssd1306.h"
+//#include "ssd1306.h"
+
+#include "u8g2.h"
+#include "u8g2_esp32_hal.h"
 
 #include "nvs_flash.h"
 #include "esp_random.h"
@@ -54,7 +57,8 @@
 #define M_PI                    3.14159265358979 // For some reason PI is needed? IDK
 
 // LCD screen vars
-SSD1306_t screen;
+//SSD1306_t screen;
+u8g2_t u8g2; // a structure which will contain all the data for one display
 int center, top, bottom;
 char lineChar[20];
 
@@ -102,7 +106,7 @@ typedef enum {
 
 #define USB_EVENTS_TO_WAIT      (DEVICE_CONNECTED | DEVICE_ADDRESS_MASK | DEVICE_DISCONNECTED)
 
-//static const char *TAG = "example";
+//static const char *"LL" = "example";
 static EventGroupHandle_t usb_flags;
 static bool is_hid_device_connected = false;
 static hid_host_interface_handle_t mouse_handle = NULL; 
@@ -120,12 +124,6 @@ static void i2c_R_init() {
     conf.clk_flags = 0;
     i2c_param_config(I2C_NUM_0, &conf);
     i2c_driver_install(I2C_NUM_0, conf.mode, 0, 0, 0);
-}
-
-/// @brief Suspect that USB initialization interrupts I2C and leaves I2C slave in control of line
-/// then may require this to reset...
-static void i2c_refresh(){
-    //i2c_master_clear_bus(I2C_NUM_0); 
 }
 
 /* WiFi should start before using ESPNOW */
@@ -159,7 +157,7 @@ static void espnow_send_cb(const uint8_t *mac_addr, esp_now_send_status_t status
     espnow_event_send_cb_t *send_cb = &evt.info.send_cb;
 
     if (mac_addr == NULL) {
-        //ESP_LOGE(TAG, "Send cb arg error");
+        //ESP_LOGE("LL", "Send cb arg error");
         return;
     }
 
@@ -167,7 +165,7 @@ static void espnow_send_cb(const uint8_t *mac_addr, esp_now_send_status_t status
     memcpy(send_cb->mac_addr, mac_addr, ESP_NOW_ETH_ALEN);
     send_cb->status = status;
     if (xQueueSend(remote_conn_queue, &evt, ESPNOW_MAXDELAY) != pdTRUE) {
-        //ESP_LOGW(TAG, "Send send queue fail");
+        //ESP_LOGW("LL", "Send send queue fail");
     }
 }
 
@@ -177,7 +175,7 @@ static void espnow_recv_cb(const uint8_t *mac_addr, const uint8_t *data, int len
     espnow_event_recv_cb_t *recv_cb = &evt.info.recv_cb;
 
     if (mac_addr == NULL || data == NULL || len <= 0) {
-        //ESP_LOGE(TAG, "Receive cb arg error");
+        //ESP_LOGE("LL", "Receive cb arg error");
         return;
     }
 
@@ -185,13 +183,13 @@ static void espnow_recv_cb(const uint8_t *mac_addr, const uint8_t *data, int len
     memcpy(recv_cb->mac_addr, mac_addr, ESP_NOW_ETH_ALEN);
     recv_cb->data = (uint8_t *) malloc(len);
     if (recv_cb->data == NULL) {
-        //ESP_LOGE(TAG, "Malloc receive data fail");
+        //ESP_LOGE("LL", "Malloc receive data fail");
         return;
     }
     memcpy(recv_cb->data, data, len);
     recv_cb->data_len = len;
     if (xQueueSend(remote_conn_queue, &evt, ESPNOW_MAXDELAY) != pdTRUE) {
-        //ESP_LOGW(TAG, "Send receive queue fail");
+        //ESP_LOGW("LL", "Send receive queue fail");
         free(recv_cb->data);
     }
 }
@@ -203,7 +201,7 @@ int espnow_data_parse(uint8_t *data, uint16_t data_len, uint8_t *state, uint16_t
     uint16_t crc, crc_cal = 0;
 
     if (data_len < sizeof(espnow_data_t)) {
-        //ESP_LOGE(TAG, "Receive ESPNOW data too short, len:%d", data_len);
+        //ESP_LOGE("LL", "Receive ESPNOW data too short, len:%d", data_len);
         return -1;
     }
 
@@ -246,7 +244,7 @@ static esp_err_t ESP_NOW_init()
 
     remote_conn_queue = xQueueCreate(ESPNOW_QUEUE_SIZE, sizeof(espnow_event_t));
     if (remote_conn_queue == NULL) {
-        //ESP_LOGE(TAG, "Create mutex fail");
+        //ESP_LOGE("LL", "Create mutex fail");
         return ESP_FAIL;
     }
 
@@ -263,7 +261,7 @@ static esp_err_t ESP_NOW_init()
     /* Add broadcast peer information to peer list. */
     esp_now_peer_info_t *peer = (esp_now_peer_info_t *) malloc(sizeof(esp_now_peer_info_t));
     if (peer == NULL) {
-        //ESP_LOGE(TAG, "Malloc peer information fail");
+        //ESP_LOGE("LL", "Malloc peer information fail");
         vSemaphoreDelete(remote_conn_queue);
         esp_now_deinit();
         return ESP_FAIL;
@@ -279,7 +277,7 @@ static esp_err_t ESP_NOW_init()
     /* Initialize sending parameters. */
     send_param = (espnow_send_param_t *) malloc(sizeof(espnow_send_param_t));
     if (send_param == NULL) {
-        //ESP_LOGE(TAG, "Malloc send parameter fail");
+        //ESP_LOGE("LL", "Malloc send parameter fail");
         vSemaphoreDelete(remote_conn_queue);
         esp_now_deinit();
         return ESP_FAIL;
@@ -294,7 +292,7 @@ static esp_err_t ESP_NOW_init()
     send_param->len = CONFIG_ESPNOW_SEND_LEN;
     send_param->buffer = (uint8_t*) malloc(CONFIG_ESPNOW_SEND_LEN);
     if (send_param->buffer == NULL) {
-        //ESP_LOGE(TAG, "Malloc send buffer fail");
+        //ESP_LOGE("LL", "Malloc send buffer fail");
         free(send_param);
         vSemaphoreDelete(remote_conn_queue);
         esp_now_deinit();
@@ -368,7 +366,7 @@ static void hid_flight_stick_cb(const uint8_t *const dat, const int length)
     if(length < sizeof(hid_stick_input_report_boot_t)) return;
 
     hid_print_new_device_report_header(HID_PROTOCOL_NONE);
-    printf("P %X, R %X, Y %X, T %X, H %X, BA %X, BB %X", stick_rep->x, stick_rep->y, stick_rep->twist, stick_rep->slider, stick_rep->hat, stick_rep->buttons_a, stick_rep->buttons_b);
+    printf("P %X, R %X, Y %X, T %X, H %X, BA %X, BB %X", (uint16_t)stick_rep->x, (uint16_t)stick_rep->y, (uint16_t)stick_rep->twist, (uint16_t)stick_rep->slider, (uint16_t)stick_rep->hat, (uint16_t)stick_rep->buttons_a, (uint16_t)stick_rep->buttons_b);
     fflush(stdout);
 }
 
@@ -495,27 +493,115 @@ bool wait_for_event(EventBits_t event, TickType_t timeout)
 	}
 } */
 
+static void LCD_ShowTestPage1()
+{
+    ESP_LOGI("LL", "u8g2_ClearBuffer");
+    //u8g2_ClearBuffer(&u8g2);
+    ESP_LOGI("LL", "u8g2_DrawBox");
+    u8g2_DrawBox(&u8g2, 0, 26, 80, 6);
+    u8g2_DrawFrame(&u8g2, 0, 26, 100, 6);
+
+    ESP_LOGI("LL", "u8g2_SetFont");
+    u8g2_SetFont(&u8g2, u8g2_font_ncenB14_tr);
+    ESP_LOGI("LL", "u8g2_DrawStr");
+    u8g2_DrawStr(&u8g2, 2, 17, "KK");
+    ESP_LOGI("LL", "u8g2_SendBuffer");
+    //u8g2_SendBuffer(&u8g2);
+    vTaskDelay(4);
+}
+static void LCD_ShowTestPage2()
+{
+    ESP_LOGI("LL", "u8g2_ClearBuffer");
+    //u8g2_ClearBuffer(&u8g2);
+    ESP_LOGI("LL", "u8g2_DrawBox");
+    u8g2_DrawBox(&u8g2, 0, 26, 80, 6);
+    u8g2_DrawFrame(&u8g2, 0, 26, 100, 6);
+
+    ESP_LOGI("LL", "u8g2_SetFont");
+    u8g2_SetFont(&u8g2, u8g2_font_ncenB14_tr);
+    ESP_LOGI("LL", "u8g2_DrawStr");
+    u8g2_DrawStr(&u8g2, 2, 17, "Kurwa mac");
+    ESP_LOGI("LL", "u8g2_SendBuffer");
+    u8g2_SendBuffer(&u8g2);
+    vTaskDelay(4);
+}
+static void LCD_ShowTestPage3()
+{
+    ESP_LOGI("LL", "u8g2_ClearBuffer");
+    //u8g2_ClearBuffer(&u8g2);
+    ESP_LOGI("LL", "u8g2_DrawBox");
+    u8g2_DrawBox(&u8g2, 0, 26, 80, 6);
+    u8g2_DrawFrame(&u8g2, 0, 26, 100, 6);
+
+    ESP_LOGI("LL", "u8g2_SetFont");
+    u8g2_SetFont(&u8g2, u8g2_font_ncenB14_tr);
+    ESP_LOGI("LL", "u8g2_DrawStr");
+    u8g2_DrawStr(&u8g2, 2, 17, "Ebola");
+    ESP_LOGI("LL", "u8g2_SendBuffer");
+    u8g2_SendBuffer(&u8g2);
+    vTaskDelay(4);
+}
+
 static void LCD_disp(char *msg, uint8_t line, bool backlight)
 {   
-    i2c_refresh();
-    ssd1306_display_text(&screen, line, msg, 20, backlight);
+    //i2c_refresh();
+        //ESP_LOGI("LCD","REFRESHED");
+    //ssd1306_display_text(&screen, line, msg, 20, backlight);
+        //ESP_LOGI("LCD","DISPCOMPLETE");
+	//ESP_LOGI("LCD", "u8g2_SetFont");
+    //u8g2_SetFont(&u8g2, u8g2_font_ncenB14_tr);
+    //u8g2_DrawStr(&u8g2, 1, 16*line - 1, msg);
+	//ESP_LOGI("LCD", "u8g2_SendBuffer");
+	//u8g2_SendBuffer(&u8g2);
 }
 
+/// @brief Used by the
+/// @param line 
 static void LCD_clear_line(uint8_t line)
 {
-    i2c_refresh();
-    ssd1306_clear_line(&screen, line, false);    
+    //i2c_refresh();
+    //ssd1306_clear_line(&screen, line, false);    
+    //u8g2_DrawStr(&u8g2, line, 17, "                 ");
+	//ESP_LOGI("LL", "u8g2_SendBuffer");
+	//u8g2_SendBuffer(&u8g2);
 }
-/// @brief LCD screen
+/// @brief LCD screen init
 static void LCD_init()
 {
-    screen._address = ADDR_LCD_SCREEN;
-    i2c_init(&screen, 128, 32);
+    //screen._address = ADDR_LCD_SCREEN;
 
-    LCD_clear_line(0);
-    LCD_clear_line(1);
-    LCD_clear_line(2);
-    LCD_clear_line(3);
+    //i2c_master_init(&screen, SDA_PIN_2_R, SCL_PIN_2_R, int16_t reset)
+    //ssd1306_init(&screen, 128, 32);
+
+    u8g2_esp32_hal_t u8g2_esp32_hal = U8G2_ESP32_HAL_DEFAULT;
+	u8g2_esp32_hal.bus.i2c.sda   = SDA_PIN_2_R;
+	u8g2_esp32_hal.bus.i2c.scl  = SCL_PIN_2_R;
+	u8g2_esp32_hal_init(u8g2_esp32_hal);
+
+
+	u8g2_t u8g2; // a structure which will contain all the data for one display
+	u8g2_Setup_ssd1306_i2c_128x32_univision_f(
+		&u8g2,
+		U8G2_R0,
+		//u8x8_byte_sw_i2c,
+		u8g2_esp32_i2c_byte_cb,
+		u8g2_esp32_gpio_and_delay_cb);  // init u8g2 structure
+	u8x8_SetI2CAddress(&u8g2.u8x8,ADDR_LCD_SCREEN<<1); // Addr requires left shift by 1 place for the read-write flag
+
+	ESP_LOGI("LCD", "u8g2_InitDisplay");
+	u8g2_InitDisplay(&u8g2); // send init sequence to the display, display is in sleep mode after this,
+
+	ESP_LOGI("LCD", "u8g2_SetPowerSave");
+	u8g2_SetPowerSave(&u8g2, 0); // wake up display
+    ESP_LOGI("LCD", "u8g2_ClearBuffer");
+	u8g2_ClearBuffer(&u8g2);
+
+    u8g2_SetFont(&u8g2, u8g2_font_6x10_tf);
+
+    //LCD_clear_line(0);
+    //LCD_clear_line(1);
+    //LCD_clear_line(2);
+    //LCD_clear_line(3);
 }
 
 /// @brief Searching for the flight computer by sending out pings every 2.5 seconds
@@ -613,13 +699,15 @@ static void update_LCD(void* param)
     while(true)
     {
         //i2c_driver_delete(I2C_NUM_0);
-        ESP_LOGI("LCD","REFRESH LCD");
+        //ESP_LOGI("LCD","REFRESH LCD");
         //i2c_R_init();
+        
+        ESP_LOGI("LCD_TASK","STATE%X",state);
         switch (state) 
         {
             case 0: // NO USB CONNECTED
                 //randInd = rand() * 10;
-                if(true)
+                /* if(true)
                 {
                     LCD_disp("- CONNECT USB - ",0,true);
                     LCD_disp("Kak upravlyat'  ",1,false);
@@ -632,19 +720,22 @@ static void update_LCD(void* param)
                     LCD_disp("How will you fly",1,false);
                     LCD_disp("a chopper w/o a ",2,false);
                     LCD_disp("flight stick??? ",3,false);
-                }
+                } */
+                LCD_ShowTestPage2();
                 break;
             case 1:
-                LCD_disp("Searching for FC",0,false);
+                /* LCD_disp("Searching for FC",0,false);
                 //LCD_disp("",1,false);
                 LCD_disp("Our MAC ADDRESS:",2,false);
-                LCD_disp(thisMACAddr,3,false);
+                LCD_disp(thisMACAddr,3,false); */
+                LCD_ShowTestPage2();
                 break;
             case 2:
-                LCD_disp("Searching for FC",0,false);
+                /* LCD_disp("Searching for FC",0,false);
                 //LCD_disp("",1,false); 
                 LCD_disp("Press BTN [2] to",2,false);
-                LCD_disp("select from list",3,false);
+                LCD_disp("select from list",3,false); */
+                LCD_ShowTestPage3();
                 break;
             case 3:
                 LCD_disp("Connected to    ",0,false);
@@ -771,7 +862,7 @@ static void usb_core_task(void* p)
 
     ESP_ERROR_CHECK( usb_host_install(&host_config) );
     vTaskDelay(pdMS_TO_TICKS(105));
-    task_created = xTaskCreatePinnedToCore(handle_usb_events, "usb_events", 4096, NULL, 8, &usb_events_task_handle, 1);
+    task_created = xTaskCreatePinnedToCore(handle_usb_events, "usb_events", 4096, NULL, 5, &usb_events_task_handle, 1);
     assert(task_created);
     
     ESP_LOGI("AAAAAA", "HID HOST 4 example");
@@ -779,7 +870,7 @@ static void usb_core_task(void* p)
     // hid host driver config
     const hid_host_driver_config_t hid_host_config = {
         .create_background_task = true,
-        .task_priority = 8,
+        .task_priority = 1,
         .stack_size = 4096,
         .core_id = 1,
         .callback = hid_host_event_callback,
@@ -897,31 +988,35 @@ static void usb_core_task(void* p)
 {
     mouse_handle = NULL;
 
-    i2c_R_init(); // Start I2C bus to flight computer with error check
+    //i2c_R_init(); // Start I2C bus to flight computer with error check
     LCD_init(); // Start LCD display
     
-    LCD_disp("LCD_init OK    ",0,false); // Confirm successful I2C start
+    
+    //LCD_disp("LCD_init OK    ",0,false); // Confirm successful I2C start
     
     vTaskDelay(500/portTICK_PERIOD_MS);
-    LCD_disp("I2C_init OK    ",1,false);
+    //LCD_disp("I2C_init OK    ",1,false);
 
     wifi_init(); // Start WIFI ANTENNA
     vTaskDelay(500/portTICK_PERIOD_MS);
-    LCD_disp("WIFI_init OK   ",2,false);
+    //LCD_disp("WIFI_init OK   ",2,false);
 
     vTaskDelay(500/portTICK_PERIOD_MS);
     ESP_NOW_init(); // Initialize ESP-NOW 
-    LCD_disp("ESP_NOW_init OK",3,false);
+    //LCD_disp("ESP_NOW_init OK",3,false);
 
-    LCD_disp("USB_init...   ",0,false);
-    LCD_clear_line(1); LCD_clear_line(2); LCD_clear_line(3);
-
+    vTaskDelay(500/portTICK_PERIOD_MS);
+    //LCD_disp("USB_init...   ",0,false);
+    //LCD_clear_line(1); LCD_clear_line(2); LCD_clear_line(3);
+    LCD_ShowTestPage1();
+    
     vTaskDelay(500/portTICK_PERIOD_MS);
 
     xTaskCreatePinnedToCore(update_LCD, "update_LCD", 4096, (void*) 1, 8, NULL, 0); // Task for screen update
+    //xTaskCreatePinnedToCore(update_LCD, "update_LCD2", 4096, (void*) 1, 8, NULL, 1); // Task for screen update
     xTaskCreatePinnedToCore(remote_conn, "remote_conn", 4096, (void*) 1, 7, NULL, 0); // Task for remote control
 
     vTaskDelay(500/portTICK_PERIOD_MS);
-    xTaskCreatePinnedToCore(usb_core_task, "usb_init", 4096, (void*) 1, 8, NULL, 1); // Task for USB stuff
+    xTaskCreatePinnedToCore(usb_core_task, "usb_init", 4096, (void*) 1, 6, NULL, 1); // Task for USB stuff
     //usb_init((void*) 1);
 }
