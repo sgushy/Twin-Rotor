@@ -457,7 +457,7 @@ static void LQI(void* pvParam)
 
                 for (int i = 0; i < 4; i++) {
                     for (int j = 0; j < 9; j++) {
-                        u[i] += K[i][j] * x[j];
+                        u[i] += K[i][j] * x[j] * -1;
                     }
                 }
 
