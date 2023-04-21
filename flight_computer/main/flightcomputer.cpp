@@ -26,10 +26,10 @@
 
 // Define I/O
 #define GPIO_LED                 2 // Indicator LED
-#define GPIO_PWM_N1              18 // Motor channel left
-#define GPIO_PWM_N2              19 // Motor channel right
-#define GPIO_PWM_N3              23 // Servo channel left
-#define GPIO_PWM_N4              5 // Servo channel right
+#define GPIO_PWM_N1              26 // Motor channel left
+#define GPIO_PWM_N2              18 // Motor channel right
+#define GPIO_PWM_N3              19 // Servo channel left
+#define GPIO_PWM_N4              23 // Servo channel right
 
 // Define PWM parameters (for engine control)
 // Are these actually used?? (Yes, for now, but in the final version no)
@@ -43,7 +43,7 @@
 #define ENGINE_PWM_MIN              3277 // 5% of 2^16, corresponds to no throttle (1 ms pulse width)
 
 // Prepare and then apply the LEDC PWM timer configuration
-ledc_timer_config_t ledc_timer_left = {
+ledc_timer_config_t pwm_timer = {
     .speed_mode       = LEDC_MODE,
     .duty_resolution  = LEDC_DUTY_RES,
     .timer_num        = LEDC_TIMER_0,
@@ -52,10 +52,40 @@ ledc_timer_config_t ledc_timer_left = {
 };
 
 // Prepare and then apply the LEDC PWM channel configuration
-ledc_channel_config_t ledc_channel_left = {
-    .gpio_num       = LEDC_OUTPUT_IO,
+ledc_channel_config_t motor1_channel = {
+    .gpio_num       = GPIO_PWM_N2,
     .speed_mode     = LEDC_MODE,
     .channel        = LEDC_CHANNEL_0,
+    .intr_type      = LEDC_INTR_DISABLE,
+    .timer_sel      = LEDC_TIMER_0,
+    .duty           = 0, // Set duty to 0%
+    .hpoint         = 0
+};
+
+ledc_channel_config_t motor2_channel = {
+    .gpio_num       = GPIO_PWM_N1,
+    .speed_mode     = LEDC_MODE,
+    .channel        = LEDC_CHANNEL_1,
+    .intr_type      = LEDC_INTR_DISABLE,
+    .timer_sel      = LEDC_TIMER_0,
+    .duty           = 0, // Set duty to 0%
+    .hpoint         = 0
+};
+
+ledc_channel_config_t servo1_channel = {
+    .gpio_num       = GPIO_PWM_N4,
+    .speed_mode     = LEDC_MODE,
+    .channel        = LEDC_CHANNEL_2,
+    .intr_type      = LEDC_INTR_DISABLE,
+    .timer_sel      = LEDC_TIMER_0,
+    .duty           = 0, // Set duty to 0%
+    .hpoint         = 0
+};
+
+ledc_channel_config_t servo2_channel = {
+    .gpio_num       = GPIO_PWM_N3,
+    .speed_mode     = LEDC_MODE,
+    .channel        = LEDC_CHANNEL_3,
     .intr_type      = LEDC_INTR_DISABLE,
     .timer_sel      = LEDC_TIMER_0,
     .duty           = 0, // Set duty to 0%
@@ -123,6 +153,7 @@ uint16_t packetSize = 42;    // expected DMP packet size (default is 42 bytes)
 uint16_t fifoCount;     // count of all bytes currently in FIFO
 uint8_t fifoBuffer[64]; // FIFO storage buffer
 uint8_t mpuIntStatus;   // holds actual interrupt status byte from MPU
+uint8_t status = 0;
 
 // Variables with regards to connection to remote
 volatile bool _receivedRemoteHandshake = false; // Have we connected to the remote?
@@ -220,8 +251,6 @@ static void update_LCD(void* param)
     TickType_t lastTaskTime = xTaskGetTickCount();
     const TickType_t delay_time = pdMS_TO_TICKS(150);
 
-    uint8_t state = 0;
-
     char YPRstr[16];
 
     while(true)
@@ -236,16 +265,28 @@ static void update_LCD(void* param)
                 LCD_disp("MOT-CNTRL-OFF    ",3,false);
                 break;
             case 1:
-                LCD_disp("STATE 0          ",0,false);
-                LCD_disp("RMT-HNDSHK       ",1,false);
+                LCD_disp("STATE 1          ",0,false);
+                LCD_disp("RMT-CONNECT      ",1,false);
                 LCD_disp("A                ",2,false);
                 LCD_disp("AWAT-ENG-START   ",3,true); 
                 break;
             case 2:
+                LCD_disp("STATE 2          ",0,false);
+                LCD_disp("ENG-ON           ",1,false);
+                LCD_disp("A                ",2,false);
+                LCD_disp("                 ",3,true); 
                 break;
             case 3:
+                LCD_disp("STATE 3          ",0,false);
+                LCD_disp("AUTO-HVR         ",1,false);
+                LCD_disp("A                ",2,false);
+                LCD_disp("                 ",3,true); 
                 break;
             case 4:
+                LCD_disp("STATE 4          ",0,false);
+                LCD_disp("CAL              ",1,false);
+                LCD_disp("A                ",2,false);
+                LCD_disp("ENG-OFF          ",3,true); 
                 break;
             default:
                 // It should never reach this case...
@@ -266,8 +307,6 @@ static void remote_conn(void* pvParam)
 {
     TickType_t lastTaskTime = xTaskGetTickCount();
     const TickType_t delay_time = pdMS_TO_TICKS(25);
-
-    uint8_t state = 0;
     
     while(true)
     {
@@ -304,8 +343,6 @@ static void motors(void* pvParam)
     TickType_t lastTaskTime = xTaskGetTickCount();
     const TickType_t delay_time = pdMS_TO_TICKS(15);
 
-    uint8_t state = 0;
-
     while(true)
     {
         switch (state)
@@ -316,11 +353,16 @@ static void motors(void* pvParam)
             case 1:
                 //ESP_LOGI("[MOT-INFO]", "Connected to remote! Awaiting engine start...");
                 break;
-            case 2:
-                break;
-            case 3:
-                break;
-            case 4:
+            case 2: case 3: case 4:
+                ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, _throttleRight);
+                ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1, _throttleLeft);
+                ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_2, _servoRight);
+                ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_3, _servoLeft);
+
+                ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+                ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1);
+                ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_2);
+                ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_3);
                 break;
             default:
                 // It should never reach this case...
@@ -337,8 +379,6 @@ static void IMU(void* pvParam)
 {
     TickType_t lastTaskTime = xTaskGetTickCount();
     const TickType_t delay_time = pdMS_TO_TICKS(IMU_PERIOD_MS);
-    
-    uint8_t state = 0;
     
     /* // Following are for the state measurement (Not anymore!!)
     mpu6050_handle_t mpu6050_dev = NULL;
@@ -418,7 +458,6 @@ static void LQI(void* pvParam)
 {
     TickType_t lastTaskTime = xTaskGetTickCount();
     const TickType_t delay_time = pdMS_TO_TICKS(LQI_PERIOD_MS);
-    uint8_t state = 0;
     float u[4] = {0, 0, 0, 0};
     float x[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
     
@@ -433,7 +472,7 @@ static void LQI(void* pvParam)
                 // Should put here a test or something (or maybe in the motors section)
                 // At least for the servos range of motion
                 break;
-            case 2:
+            case 2: case 3: case 4:
                 // Fly state
                 // update accumulator values
                 for (int i = 0; i < 3; i++) {
@@ -462,18 +501,14 @@ static void LQI(void* pvParam)
                 }
 
                 // operate on u to get thrusts and angles
-                _throttleRight = u[0] / MAX_THRUST_N * (ENGINE_PWM_MAX - ENGINE_PWM_MIN)
+                _throttleRight = state == 4 ? 0 : u[0] / MAX_THRUST_N * (ENGINE_PWM_MAX - ENGINE_PWM_MIN)
                     + ENGINE_PWM_MIN;
-                _throttleLeft = u[1] / MAX_THRUST_N * (ENGINE_PWM_MAX - ENGINE_PWM_MIN)
+                _throttleLeft = state == 4 ? 0 : u[1] / MAX_THRUST_N * (ENGINE_PWM_MAX - ENGINE_PWM_MIN)
                     + ENGINE_PWM_MIN; 
                 _servoRight = u[2] / (u[0] * 1.570796f) * (SERVO_PWM_MAX - SERVO_PWM_MIN) 
                     + SERVO_PWM_MID;
                 _servoLeft = u[3] / (u[1] * 1.570796f) * (SERVO_PWM_MAX - SERVO_PWM_MIN)
                     + SERVO_PWM_MID;
-                break;
-            case 3:
-                break;
-            case 4:
                 break;
             default:
                 // It should never reach this case...
@@ -505,6 +540,44 @@ extern "C" void app_main(void)
     LCD_disp("START TASKS    ",3,false);
    
     vTaskDelay(1000/portTICK_PERIOD_MS);
+
+    // setup motor and servo PWMs
+    if(ledc_timer_config(&pwm_timer) == ESP_OK)
+	{
+		ESP_LOGI("[MOT-INFO]", "PWM timer inited successfully");
+	}
+	else
+	{
+		ESP_LOGE("[MOT-ERR]", "PWM timer failed to init");
+	}
+
+    if(ledc_channel_config(&motor1_channel) == ESP_OK)
+	{
+		ESP_LOGI("[MOT-INFO]", "Motor 1 PWM channel OK");
+	} else {
+        ESP_LOGE("[MOT-ERR]", "Motor 1 PWM channel FAILED");
+    }
+
+    if(ledc_channel_config(&motor2_channel) == ESP_OK)
+	{
+		ESP_LOGI("[MOT-INFO]", "Motor 2 PWM channel OK");
+	} else {
+        ESP_LOGE("[MOT-ERR]", "Motor 2 PWM channel FAILED");
+    }
+
+    if(ledc_channel_config(&servo1_channel) == ESP_OK)
+	{
+		ESP_LOGI("[MOT-INFO]", "Servo 1 PWM channel OK");
+	} else {
+        ESP_LOGE("[MOT-ERR]", "Servo 1 PWM channel FAILED");
+    }
+
+    if(ledc_channel_config(&servo2_channel) == ESP_OK)
+	{
+		ESP_LOGI("[MOT-INFO]", "Servo 2 PWM channel OK");
+	} else {
+        ESP_LOGE("[MOT-ERR]", "Servo 2 PWM channel FAILED");
+    }
 
     xTaskCreatePinnedToCore(IMU, "IMU", 4096, (void*) 1, 7, NULL, 0); // Task for reading IMU sensors
     xTaskCreatePinnedToCore(remote_conn, "remote_conn", 4096, (void*) 1, 4, NULL, 0); // Task for remote control (will listen in the background)
