@@ -153,7 +153,6 @@ uint16_t packetSize = 42;    // expected DMP packet size (default is 42 bytes)
 uint16_t fifoCount;     // count of all bytes currently in FIFO
 uint8_t fifoBuffer[64]; // FIFO storage buffer
 uint8_t mpuIntStatus;   // holds actual interrupt status byte from MPU
-uint8_t status = 0;
 
 // Variables with regards to connection to remote
 volatile bool _receivedRemoteHandshake = false; // Have we connected to the remote?
@@ -255,7 +254,7 @@ static void update_LCD(void* param)
 
     while(true)
     {
-        switch (state)
+        switch (_state)
         {
             case 0:
                 LCD_disp("STATE 0          ",0,false);
@@ -310,7 +309,7 @@ static void remote_conn(void* pvParam)
     
     while(true)
     {
-        switch (state)
+        switch (_state)
         {
             case 0:
                 //ESP_LOGI("[RC-INFO]", "Awaiting connection!");
@@ -345,7 +344,7 @@ static void motors(void* pvParam)
 
     while(true)
     {
-        switch (state)
+        switch (_state)
         {
             case 0:
                 //ESP_LOGI("[MOT-INFO]", "Motors idle - awaiting remote connection!");
@@ -463,7 +462,7 @@ static void LQI(void* pvParam)
     
     while(true)
     {
-        switch (state)
+        switch (_state)
         {
             case 0:
                 // Do nothing (no control happens while the system is off)
