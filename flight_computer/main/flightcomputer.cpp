@@ -498,9 +498,11 @@ static void LQI(void* pvParam)
                 }
 
                 // operate on u to get thrusts and angles
-                _throttleRight = _state == 4 ? 0 : u[0] / MAX_THRUST_N * (ENGINE_PWM_MAX - ENGINE_PWM_MIN)
+                _throttleRight = _state == 4 ? 0 : (u[0] + _forcePercentageRight / 100) 
+                    / MAX_THRUST_N * (ENGINE_PWM_MAX - ENGINE_PWM_MIN)
                     + ENGINE_PWM_MIN;
-                _throttleLeft = _state == 4 ? 0 : u[1] / MAX_THRUST_N * (ENGINE_PWM_MAX - ENGINE_PWM_MIN)
+                _throttleLeft = _state == 4 ? 0 : (u[1] + _forcePercentageLeft / 100)
+                    / MAX_THRUST_N * (ENGINE_PWM_MAX - ENGINE_PWM_MIN)
                     + ENGINE_PWM_MIN; 
                 _servoRight = u[2] / (u[0] * 1.570796f) * (SERVO_PWM_MAX - SERVO_PWM_MIN) 
                     + SERVO_PWM_MID;
