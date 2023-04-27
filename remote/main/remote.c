@@ -69,10 +69,13 @@ volatile long _lastCommunicationWithRemote = 0; // Last time we heard from remot
 uint8_t _remoteMACAddr[6] = {00,00,00,00,00,00}; // MAC address of remote (this MAC address)
 uint8_t _aircraftMACAddr[6] = {00,00,00,00,00,00}; // MAC address of aircraft (will be detected during remote ping/proximity scan)
 
-static uint16_t s_espnow_seq[ESPNOW_DATA_MAX] = { 0, 0 };
+#define CONN_TIMEOUT 2048 // If no received packet within this time, we assume lost connection
+
+//static uint16_t s_espnow_seq[ESPNOW_DATA_MAX] = { 0, 0 };
 
 #define ESPNOW_MAXDELAY 512
 static QueueHandle_t remote_conn_queue; // The queue containing messages to send to and receive from the FC
+
 static QueueHandle_t potential_connections; // The queue containing potential remote addresses
 
 // The commanded angles and yaw rate will be broadcasted to the aircraft
@@ -92,7 +95,7 @@ volatile uint8_t lastHatSwitchPress = 8; // Joystick hat switch, neutral = 8, ri
 volatile uint8_t throttlePos = 0xFF; // Throttle position, for some reason is reversed, 0xFF is zero pos, 0 is max
 volatile uint16_t lastStickR = 0x1FF; // Joystick roll axis, 0x0 is left, 0x1FF is center, 0x3FF is right
 volatile uint16_t lastStickP = 0x1FF; // Joystick pitch axis, 0x0 is forward, 0x1FF is center, 0x3FF is back
-volatile uint16_t lastStickY = 0x80; // Joystick yaw axis, 0x0 is left, 0x80 is center, 0xFF is right
+volatile uint8_t lastStickY = 0x80; // Joystick yaw axis, 0x0 is left, 0x80 is center, 0xFF is right
 
 volatile hid_stick_input_report_boot_t last_stick_report; // Previous message... (initialize with all 0)
 
@@ -157,7 +160,7 @@ static void wifi_init()
     ESP_ERROR_CHECK( esp_wifi_set_storage(WIFI_STORAGE_RAM) );
     ESP_ERROR_CHECK( esp_wifi_set_mode(WIFI_MODE_STA) );
     ESP_ERROR_CHECK( esp_wifi_start());
-    //ESP_ERROR_CHECK( esp_wifi_set_protocol(ESPNOW_WIFI_IF, WIFI_PROTOCOL_11B|WIFI_PROTOCOL_11G|WIFI_PROTOCOL_11N|WIFI_PROTOCOL_LR) );
+    ESP_ERROR_CHECK( esp_wifi_set_protocol(ESPNOW_WIFI_IF, WIFI_PROTOCOL_11B|WIFI_PROTOCOL_11G|WIFI_PROTOCOL_11N)); //|WIFI_PROTOCOL_LR) );
 }
 
 /* ESPNOW sending or receiving callback function is called in WiFi task.
@@ -185,9 +188,10 @@ static void espnow_recv_cb(const uint8_t *mac_addr, const uint8_t *data, int len
 {
     espnow_event_t evt;
     espnow_event_recv_cb_t *recv_cb = &evt.info.recv_cb;
+    ESP_LOGI("ESPN", "Received packet !");
 
     if (mac_addr == NULL || data == NULL || len <= 0) {
-        //ESP_LOGE(TAG, "Receive cb arg error");
+        ESP_LOGE("ESPN", "Strange things have happened to packet!");
         return;
     }
 
@@ -195,13 +199,13 @@ static void espnow_recv_cb(const uint8_t *mac_addr, const uint8_t *data, int len
     memcpy(recv_cb->mac_addr, mac_addr, ESP_NOW_ETH_ALEN);
     recv_cb->data = (uint8_t *) malloc(len);
     if (recv_cb->data == NULL) {
-        //ESP_LOGE(TAG, "Malloc receive data fail");
+        ESP_LOGE("ESPN", "Malloc receive data fail");
         return;
     }
     memcpy(recv_cb->data, data, len);
     recv_cb->data_len = len;
     if (xQueueSend(remote_conn_queue, &evt, ESPNOW_MAXDELAY) != pdTRUE) {
-        //ESP_LOGW(TAG, "Send receive queue fail");
+        ESP_LOGE("ESPN", "Send receive queue fail");
         free(recv_cb->data);
     }
 }
@@ -213,53 +217,122 @@ int espnow_data_parse(uint8_t *data, uint16_t data_len, uint8_t *state, uint16_t
     uint16_t crc, crc_cal = 0;
 
     if (data_len < sizeof(espnow_data_t)) {
-        //ESP_LOGE(TAG, "Receive ESPNOW data too short, len:%d", data_len);
+        ESP_LOGE("ESPN", "Received ESPNOW data too short, length:%d", data_len);
         return -1;
     }
 
     *state = buf->state;
-    *seq = buf->seq_num;
-    *magic = buf->magic;
-    crc = buf->crc;
-    buf->crc = 0;
-    crc_cal = esp_crc16_le(UINT16_MAX, (uint8_t const *)buf, data_len);
+    //*seq = buf->seq_num;
+    //*magic = buf->magic;
+    //crc = buf->crc;
+    //buf->crc = 0;
+    // crc_cal = esp_crc16_le(UINT16_MAX, (uint8_t const *)buf, data_len);
 
-    if (crc_cal == crc) {
-        return buf->type;
-    }
+    // if (crc_cal == crc) {
+    //     return buf->type;
+    // }
 
-    return -1;
+    return buf->type;
 }
 
 /* Prepare ESPNOW data to be sent. */
 void espnow_data_prepare(espnow_send_param_t *send_param)
 {
+    ESP_LOGI("ESPN","Spawning the data!");
+            // espnow_data_t *pingpacket_data = (espnow_data_t *) malloc(sizeof(espnow_data_t));
+            // memset(pingpacket_data, 0 , sizeof(espnow_data_t));
+            // pingpacket_data->ypr[0] = _cmdYawRate;
+            // pingpacket_data->ypr[1] = _cmdPitch;
+            // pingpacket_data->ypr[2] = _cmdRoll;
+            // pingpacket_data->button = lastButtonPress;
+            // pingpacket_data->hat = lastHatSwitchPress;
+            // pingpacket_data->throttle = _cmdThrottlePercentage;
+            // pingpacket_data->state = state;
+            // pingpacket_data->packet_ID = esp_random();
+            
+            // ESP_LOGI("PING", "Placing data in packet!");
+            // pingpacket->buffer = pingpacket_data;
+
     espnow_data_t *buf = (espnow_data_t *)send_param->buffer;
 
     assert(send_param->len >= sizeof(espnow_data_t));
 
     buf->type = IS_BROADCAST_ADDR(send_param->dest_mac) ? ESPNOW_DATA_BROADCAST : ESPNOW_DATA_UNICAST;
-    buf->state = send_param->state;
-    buf->seq_num = s_espnow_seq[buf->type]++;
-    buf->crc = 0;
-    buf->magic = send_param->magic;
+    buf->state = state;
+    buf->sender[0] = &_remoteMACAddr[0]; // Tag sender with our MAC address
+    buf->sender[1] = &_remoteMACAddr[1];
+    buf->sender[2] = &_remoteMACAddr[2];
+    buf->sender[3] = &_remoteMACAddr[3];
+    buf->sender[4] = &_remoteMACAddr[4];
+    buf->sender[5] = &_remoteMACAddr[5];
+
+    if(send_param->broadcast)
+    {
+        buf->recipient[0] = (uint8_t *) 00; // No particular intended target of the package
+        buf->recipient[1] = (uint8_t *) 00;
+        buf->recipient[2] = (uint8_t *) 00;
+        buf->recipient[3] = (uint8_t *) 00;
+        buf->recipient[4] = (uint8_t *) 00;
+        buf->recipient[5] = (uint8_t *) 00;
+    }
+    else
+    {
+        buf->recipient[0] = &_aircraftMACAddr[0]; // Targeting the aircraft MAC address
+        buf->recipient[1] = &_aircraftMACAddr[1];
+        buf->recipient[2] = &_aircraftMACAddr[2];
+        buf->recipient[3] = &_aircraftMACAddr[3];
+        buf->recipient[4] = &_aircraftMACAddr[4];
+        buf->recipient[5] = &_aircraftMACAddr[5];
+    }
+
+    buf->ypr[0] = _cmdYawRate;
+    buf->ypr[1] = _cmdPitch;
+    buf->ypr[2] = _cmdRoll;
+
+    switch(send_param->type)
+    {
+        case 0: // Pinging!
+        case 1:
+            buf->button = 88;
+            buf->hat = 69;
+        break;
+        case 2: // Handshaking!
+        case 3:
+            buf->button = 69;
+            buf->hat = 88;
+        break;
+        case 4: // Regular operation
+        case 5:
+            buf->button = lastButtonPress;
+            buf->hat = lastHatSwitchPress;
+        break;
+        default:
+    }
+    buf->throttle = _cmdThrottlePercentage;
+    buf->state = state;
+    buf->packet_ID = esp_random(); // Because we send redundant packets to deal with packet loss  
+                                   // the aviation should only process one copy of the same packet
+
+    //buf->seq_num = s_espnow_seq[buf->type]++;
+    //buf->crc = 0;
+    //buf->magic = send_param->magic;
     /* Fill all remaining bytes after the data with random values */
-    esp_fill_random(buf->payload, send_param->len - sizeof(espnow_data_t));
-    buf->crc = esp_crc16_le(UINT16_MAX, (uint8_t const *)buf, send_param->len);
+    //esp_fill_random(buf->payload, send_param->len - sizeof(espnow_data_t));
+    //buf->crc = esp_crc16_le(UINT16_MAX, (uint8_t const *)buf, send_param->len);
 }
 
 static esp_err_t ESP_NOW_init()
 {
     esp_read_mac(_remoteMACAddr, ESP_MAC_WIFI_STA); // For use in display of own MAC address
-
-    espnow_send_param_t *send_param;
+    ESP_LOGI("AAZZ", "I know my MAC address");
+    //espnow_send_param_t *send_param;
 
     remote_conn_queue = xQueueCreate(ESPNOW_QUEUE_SIZE, sizeof(espnow_event_t));
     if (remote_conn_queue == NULL) {
         //ESP_LOGE(TAG, "Create mutex fail");
         return ESP_FAIL;
     }
-
+    ESP_LOGI("AAZZ", "I have created a queue...");
     /* Initialize ESPNOW and register sending and receiving callback function. */
     ESP_ERROR_CHECK( esp_now_init() );
     ESP_ERROR_CHECK( esp_now_register_send_cb(espnow_send_cb) );
@@ -269,11 +342,11 @@ static esp_err_t ESP_NOW_init()
 #endif
     /* Set primary master key. */
     ESP_ERROR_CHECK( esp_now_set_pmk((uint8_t *)CONFIG_ESPNOW_PMK) );
-
+    ESP_LOGI("AAZZ", "I have initialized one part.");
     /* Add broadcast peer information to peer list. */
     esp_now_peer_info_t *peer = (esp_now_peer_info_t *) malloc(sizeof(esp_now_peer_info_t));
     if (peer == NULL) {
-        //ESP_LOGE(TAG, "Malloc peer information fail");
+        ESP_LOGE("AAZZ", "Malloc peer information fail");
         vSemaphoreDelete(remote_conn_queue);
         esp_now_deinit();
         return ESP_FAIL;
@@ -285,36 +358,47 @@ static esp_err_t ESP_NOW_init()
     memcpy(peer->peer_addr, _remoteMACAddr, ESP_NOW_ETH_ALEN);
     ESP_ERROR_CHECK( esp_now_add_peer(peer) );
     free(peer);
+    ESP_LOGI("AAZZ", "I have initialized 2 part");
+     /* Initialize sending parameters. */
+    espnow_send_param_t *pingpacket = (espnow_send_param_t *) malloc(sizeof(espnow_send_param_t));
+    if (pingpacket == NULL) {
+        ESP_LOGE("AAZZ", "Malloc send parameter fail");
+        vSemaphoreDelete(remote_conn_queue);
+        esp_now_deinit();
+        return ESP_FAIL;
+    }
+    
+    ESP_LOGI("AAZZ", "I have initialized 3 part");
+        memset(pingpacket, 0, sizeof(espnow_send_param_t));
+        pingpacket->unicast = false;
+        pingpacket->broadcast = true;
+        pingpacket->state = state; // We use this to highlight the state of the remote 
+        pingpacket->magic = 0; // NOTE: Magic is unused
+        pingpacket->count = 25; // Number of times to send
+        pingpacket->delay = 10/portTICK_PERIOD_MS; // Delay between consecutive packet sends
+        pingpacket->len = sizeof(espnow_data_t); // Length of packet
+        pingpacket->buffer = (uint8_t*) malloc(sizeof(espnow_data_t)); // Pointer to the packet data
 
-    // /* Initialize sending parameters. */
-    // send_param = (espnow_send_param_t *) malloc(sizeof(espnow_send_param_t));
-    // if (send_param == NULL) {
-    //     //ESP_LOGE(TAG, "Malloc send parameter fail");
-    //     vSemaphoreDelete(remote_conn_queue);
-    //     esp_now_deinit();
-    //     return ESP_FAIL;
-    // }
-    // memset(send_param, 0, sizeof(espnow_send_param_t));
-    // send_param->unicast = false;
-    // send_param->broadcast = true;
-    // send_param->state = 0;
-    // send_param->magic = esp_random();
-    // send_param->count = CONFIG_ESPNOW_SEND_COUNT;
-    // send_param->delay = CONFIG_ESPNOW_SEND_DELAY;
-    // send_param->len = CONFIG_ESPNOW_SEND_LEN;
-    // send_param->buffer = (uint8_t*) malloc(CONFIG_ESPNOW_SEND_LEN);
-    // if (send_param->buffer == NULL) {
-    //     //ESP_LOGE(TAG, "Malloc send buffer fail");
-    //     free(send_param);
-    //     vSemaphoreDelete(remote_conn_queue);
-    //     esp_now_deinit();
-    //     return ESP_FAIL;
-    // }
-    // memcpy(send_param->dest_mac, _remoteMACAddr, ESP_NOW_ETH_ALEN);
-    // espnow_data_prepare(send_param);
+        pingpacket->type = 0;
 
+    ESP_LOGI("AAZZ", "I have initialized 4 part");
+        if (pingpacket->buffer == NULL) {
+            ESP_LOGE("AAZZ", "Malloc send buffer fail");
+            free(pingpacket);
+            vSemaphoreDelete(remote_conn_queue);
+            esp_now_deinit();
+            return ESP_FAIL;
+        }
+        
+        memcpy(pingpacket->dest_mac, &_aircraftMACAddr, ESP_NOW_ETH_ALEN);
+        espnow_data_prepare(pingpacket);
+
+        ESP_LOGI("PING", "PACKET READY!");
+        free(pingpacket);
+        ESP_LOGI("PING", "DELETING PACKET!");
     // //xTaskCreate(espnow_task, "espnow_task", 2048, send_param, 4, NULL);
-
+        
+        ESP_LOGI("PING", "PACKET TEST COMPLETED!");
     return ESP_OK;
 }
 
@@ -519,7 +603,7 @@ static void esp_now_ping(void* param)
     TickType_t lastTaskTime = xTaskGetTickCount();
     const TickType_t delay_time = pdMS_TO_TICKS(2500);
     
-    potential_connections = xQueueCreate(8,sizeof(_remoteMACAddr));
+    potential_connections = xQueueCreate(8, sizeof(_remoteMACAddr));
 
     char seensofar[16];
 
@@ -527,10 +611,13 @@ static void esp_now_ping(void* param)
 
     //LCD_clear_line(1);
 
+    ESP_LOGI("HELLO","!!");
     while(true)
     {
-        if(state == 2 || state == 1)
-        {
+        ESP_LOGI("HELLO","??");
+        switch(state)
+        {   
+            case 1:
             // Broadcast message and wait for response...
             ESP_LOGI("Ping","Pong");
             num_potential_conn = uxQueueMessagesWaiting(potential_connections); // Number of devices currently found
@@ -539,6 +626,7 @@ static void esp_now_ping(void* param)
             {
                 ESP_LOGI("ESPN","Found %02X device", num_potential_conn);
                 state = 2;
+                break; // Stop and move to state 2 once we have found potential connections...
             }
             else
             {
@@ -548,38 +636,54 @@ static void esp_now_ping(void* param)
 
             ESP_LOGI("ESPN","Preparing to broadcast payload for discovery!");
 
-                
-    /* Initialize sending parameters. */
-    espnow_send_param_t *pingpacket = (espnow_send_param_t *) malloc(sizeof(espnow_send_param_t));
-    if (pingpacket == NULL) {
-        //ESP_LOGE(TAG, "Malloc send parameter fail");
-        vSemaphoreDelete(remote_conn_queue);
-        esp_now_deinit();
-        return ESP_FAIL;
-    }
-        memset(pingpacket, 0, sizeof(espnow_send_param_t));
-        pingpacket->unicast = false;
-        pingpacket->broadcast = true;
-        pingpacket->state = 0;
-        pingpacket->magic = esp_random();
-        pingpacket->count = 25;
-        pingpacket->delay = 10/portTICK_PERIOD_MS;
-        pingpacket->len = CONFIG_ESPNOW_SEND_LEN;
-        pingpacket->buffer = (uint8_t*) malloc(CONFIG_ESPNOW_SEND_LEN);
+            /* Initialize sending parameters. */
+            espnow_send_param_t *pingpacket = (espnow_send_param_t *) malloc(sizeof(espnow_send_param_t));
+            if (pingpacket == NULL) 
+            {
+                //ESP_LOGE(TAG, "Malloc send parameter fail");
+                vSemaphoreDelete(remote_conn_queue);
+                esp_now_deinit();
+                //return ESP_FAIL;
+            }
+            memset(pingpacket, 0, sizeof(espnow_send_param_t));
+            pingpacket->unicast = false;
+            pingpacket->broadcast = true;
+            pingpacket->state = 0;
+            pingpacket->magic = 999999;
+            pingpacket->count = 25;
+            pingpacket->delay = 10/portTICK_PERIOD_MS;
+            pingpacket->len = sizeof(espnow_data_t);
+            pingpacket->buffer = (uint8_t*) malloc(sizeof(espnow_data_t));
+            pingpacket->type = 0;
 
-        if (pingpacket->buffer == NULL) {
-            //ESP_LOGE(TAG, "Malloc send buffer fail");
+            if (pingpacket->buffer == NULL) {
+                //ESP_LOGE(TAG, "Malloc send buffer fail");
+                free(pingpacket);
+                vSemaphoreDelete(remote_conn_queue);
+                esp_now_deinit();
+                //return ESP_FAIL;
+            }
+            
+            //memcpy(pingpacket->dest_mac, _aircraftMACAddr, ESP_NOW_ETH_ALEN);
+            *pingpacket->dest_mac = malloc(sizeof(_aircraftMACAddr));
+            *pingpacket->dest_mac = _aircraftMACAddr;
+            //espnow_data_prepare(pingpacket);
+
+            ESP_LOGI("PING", "PACKET READY!");
+
+            espnow_data_prepare(pingpacket);
+
+            ESP_LOGI("PING", "PINGING!!!!!");
+
+            
+
             free(pingpacket);
-            vSemaphoreDelete(remote_conn_queue);
-            esp_now_deinit();
-            return ESP_FAIL;
+            //free(pingpacket_data);
+            break;
+
+            default:
         }
-        
-        memcpy(pingpacket->dest_mac, _remoteMACAddr, ESP_NOW_ETH_ALEN);
-        espnow_data_prepare(pingpacket);
-
-        // TODO: Send the ping
-
+    
         vTaskDelayUntil(&lastTaskTime, delay_time);
     }
     
@@ -607,20 +711,8 @@ static void esp_now_transmit(void* param)
         {
             // Broadcast message and wait for response...
             ESP_LOGI("Ping","Pong");
-            //num_potential_conn = uxQueueMessagesWaiting(potential_connections); // Number of devices currently found
             
-            // if(num_potential_conn > 0)
-            // {
-            //     snprintf(seensofar, sizeof(seensofar), "Found %02X device", num_potential_conn);
-            //     state = 2;
-            // }
-            // else
-            // {
-            //     snprintf(seensofar, sizeof(seensofar), "None found yet!");
-            // }
 
-            //LCD_disp(seensofar,1,false);
-            //vTaskDelay(delay_time);
         }
         vTaskDelayUntil(&lastTaskTime, delay_time);
     }
@@ -779,9 +871,28 @@ static void remote_conn(void* pvParam)
                 break;
             case 1:
                 //parseInput(); 
+                //In case 1, we wait for the pingback task to give us a connection to a flight controller
+                //In the meantime, we do nothing...
                 break;
             case 2:
                 // Collected multiple potential in queue, now we want to select the right one to connect to
+                switch(lastButtonPress)
+                {
+                    case 1: // Trigger pulled, we connect to the selected in queue
+
+                    break;
+                    case 2: // Reset, clear queue and retry
+                        xQueueReset(potential_connections);
+                        state = 1;
+                    default: // Do nothing by default
+                    break;
+                }
+                switch(lastHatSwitchPress)
+                {
+                    case 8:
+                        // Nothing happened...
+                    break;
+                }
                 break;
             case 3:
                 // In this case, we are connected to the FC and all we need is to run pre-flight routine
@@ -981,7 +1092,7 @@ static void usb_core_task(void* p)
 
     xTaskCreatePinnedToCore(remote_conn, "remote_conn", 4096, (void*) 1, 7, NULL, 0); // Task for remote control
 
-    xTaskCreatePinnedToCore(esp_now_ping, "esp_now_ping", 4096, (void*) 1, 9, NULL, 1); //Scanner task, used only to connect to remote, after which it shuts off
+    xTaskCreatePinnedToCore(esp_now_ping, "esp_now_ping", 4096, (void*) 1, 9, NULL, 0); //Scanner task, used only to connect to remote, after which it shuts off
     vTaskDelay(500/portTICK_PERIOD_MS);
     xTaskCreatePinnedToCore(usb_core_task, "usb_init", 4096, (void*) 1, 8, NULL, 1); // Task for USB stuff
     //usb_init((void*) 1);
