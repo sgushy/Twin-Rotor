@@ -137,6 +137,7 @@ static void i2c_R_init() {
 
 /// @brief Suspect that USB initialization interrupts I2C and leaves I2C slave in control of line
 /// then may require this to reset...
+/// EDIT: We have no clue, so for now the display screen will just display MAC address
 static void i2c_refresh(){
     //i2c_master_clear_bus(I2C_NUM_0); 
 }
@@ -172,16 +173,16 @@ static void espnow_send_cb(const uint8_t *mac_addr, esp_now_send_status_t status
     espnow_event_send_cb_t *send_cb = &evt.info.send_cb;
 
     if (mac_addr == NULL) {
-        //ESP_LOGE(TAG, "Send cb arg error");
+        ESP_LOGE("ESPN", "Send cb arg error");
         return;
     }
 
     evt.id = ESPNOW_SEND_CB;
     memcpy(send_cb->mac_addr, mac_addr, ESP_NOW_ETH_ALEN);
     send_cb->status = status;
-    if (xQueueSend(remote_conn_queue, &evt, ESPNOW_MAXDELAY) != pdTRUE) {
-        //ESP_LOGW(TAG, "Send send queue fail");
-    }
+    // if (xQueueSend(remote_conn_queue, &evt, ESPNOW_MAXDELAY) != pdTRUE) {
+    //     ESP_LOGE("ESPN", "Send send queue fail");
+    // }
 }
 
 static void espnow_recv_cb(const uint8_t *mac_addr, const uint8_t *data, int len)
@@ -202,6 +203,7 @@ static void espnow_recv_cb(const uint8_t *mac_addr, const uint8_t *data, int len
         ESP_LOGE("ESPN", "Malloc receive data fail");
         return;
     }
+
     memcpy(recv_cb->data, data, len);
     recv_cb->data_len = len;
     if (xQueueSend(remote_conn_queue, &evt, ESPNOW_MAXDELAY) != pdTRUE) {
@@ -210,8 +212,8 @@ static void espnow_recv_cb(const uint8_t *mac_addr, const uint8_t *data, int len
     }
 }
 
-/* Parse received ESPNOW data. */
-int espnow_data_parse(uint8_t *data, uint16_t data_len, uint8_t *state, uint16_t *seq, int *magic)
+/* Parse received ESPNOW data. Returns [-1] for wrong person, [0] for duplicate, [1] for success received*/
+int espnow_data_parse(uint8_t *data, uint16_t data_len, uint8_t *state, uint16_t *last_packetID)
 {
     espnow_data_t *buf = (espnow_data_t *)data;
     uint16_t crc, crc_cal = 0;
@@ -222,15 +224,48 @@ int espnow_data_parse(uint8_t *data, uint16_t data_len, uint8_t *state, uint16_t
     }
 
     *state = buf->state;
-    //*seq = buf->seq_num;
-    //*magic = buf->magic;
-    //crc = buf->crc;
-    //buf->crc = 0;
-    // crc_cal = esp_crc16_le(UINT16_MAX, (uint8_t const *)buf, data_len);
+    
+    if(buf->type == 5)
+    {
+        for(int ii = 0; ii < 6; ii++)
+        {
+            if(buf->recipient[ii] != _remoteMACAddr[ii])
+            return -1; // Packet was not intended for us if this is true!!!
+        }
+        _lastCommunicationWithRemote = 0; // We just heard from the remote!
+        return 1;
+    }
 
-    // if (crc_cal == crc) {
-    //     return buf->type;
-    // }
+    if(buf->packet_ID == *last_packetID)
+    {
+        return 0; // Redundant packet, ignore!
+    }
+    else if(buf->type == 1 && buf->button == 88) // This must be a pingback from the aircraft!
+    {
+        /* for(int ii = 0; ii < 6; ii++)
+        {
+            _aircraftMACAddr[ii] = buf->recipient[ii];
+        } */
+        ESP_LOGI("Ping","Back from aircraft; MACADDR %02X:%02X:%02X:%02X:%02X:%02X", buf->recipient[0], buf->recipient[1], buf->recipient[2], buf->recipient[3], buf->recipient[4], buf->recipient[5]);
+        ESP_LOGI("REM","We will record this aircraft MAC address in the QUEUE");
+
+        xQueueSend(potential_connections, buf->recipient, pdMS_TO_TICKS(69)); // Place this into the potential connections queue
+
+        last_packetID = buf->packet_ID; // Update the packet ID, we have received this data!
+    }
+
+    else if(buf->type == 3 && buf->hat == 88) // This must be a reply to our aircraft connection request!
+    {
+        for(int ii = 0; ii < 6; ii++)
+        {
+            _aircraftMACAddr[ii] = buf->recipient[ii];
+        }
+
+        ESP_LOGI("Ping","CONNECTED TO AIRCRAFT - %02X:%02X:%02X:%02X:%02X:%02X", buf->recipient[0], buf->recipient[1], buf->recipient[2], buf->recipient[3], buf->recipient[4], buf->recipient[5]);
+        
+        state = 3; // We are now connected to the aircraft!
+        last_packetID = buf->packet_ID; // Update the packet ID, we have received this data!
+    }
 
     return buf->type;
 }
@@ -239,19 +274,6 @@ int espnow_data_parse(uint8_t *data, uint16_t data_len, uint8_t *state, uint16_t
 void espnow_data_prepare(espnow_send_param_t *send_param)
 {
     ESP_LOGI("ESPN","Spawning the data!");
-            // espnow_data_t *pingpacket_data = (espnow_data_t *) malloc(sizeof(espnow_data_t));
-            // memset(pingpacket_data, 0 , sizeof(espnow_data_t));
-            // pingpacket_data->ypr[0] = _cmdYawRate;
-            // pingpacket_data->ypr[1] = _cmdPitch;
-            // pingpacket_data->ypr[2] = _cmdRoll;
-            // pingpacket_data->button = lastButtonPress;
-            // pingpacket_data->hat = lastHatSwitchPress;
-            // pingpacket_data->throttle = _cmdThrottlePercentage;
-            // pingpacket_data->state = state;
-            // pingpacket_data->packet_ID = esp_random();
-            
-            // ESP_LOGI("PING", "Placing data in packet!");
-            // pingpacket->buffer = pingpacket_data;
 
     espnow_data_t *buf = (espnow_data_t *)send_param->buffer;
 
@@ -259,35 +281,36 @@ void espnow_data_prepare(espnow_send_param_t *send_param)
 
     buf->type = IS_BROADCAST_ADDR(send_param->dest_mac) ? ESPNOW_DATA_BROADCAST : ESPNOW_DATA_UNICAST;
     buf->state = state;
-    buf->sender[0] = &_remoteMACAddr[0]; // Tag sender with our MAC address
-    buf->sender[1] = &_remoteMACAddr[1];
-    buf->sender[2] = &_remoteMACAddr[2];
-    buf->sender[3] = &_remoteMACAddr[3];
-    buf->sender[4] = &_remoteMACAddr[4];
-    buf->sender[5] = &_remoteMACAddr[5];
+    buf->sender[0] = _remoteMACAddr[0]; // Tag sender with our MAC address
+    buf->sender[1] = _remoteMACAddr[1];
+    buf->sender[2] = _remoteMACAddr[2];
+    buf->sender[3] = _remoteMACAddr[3];
+    buf->sender[4] = _remoteMACAddr[4];
+    buf->sender[5] = _remoteMACAddr[5];
 
     if(send_param->broadcast)
     {
-        buf->recipient[0] = (uint8_t *) 00; // No particular intended target of the package
-        buf->recipient[1] = (uint8_t *) 00;
-        buf->recipient[2] = (uint8_t *) 00;
-        buf->recipient[3] = (uint8_t *) 00;
-        buf->recipient[4] = (uint8_t *) 00;
-        buf->recipient[5] = (uint8_t *) 00;
+        buf->recipient[0] = 00; // No particular intended target of the package
+        buf->recipient[1] = 00;
+        buf->recipient[2] = 00;
+        buf->recipient[3] = 00;
+        buf->recipient[4] = 00;
+        buf->recipient[5] = 00;
     }
     else
     {
-        buf->recipient[0] = &_aircraftMACAddr[0]; // Targeting the aircraft MAC address
-        buf->recipient[1] = &_aircraftMACAddr[1];
-        buf->recipient[2] = &_aircraftMACAddr[2];
-        buf->recipient[3] = &_aircraftMACAddr[3];
-        buf->recipient[4] = &_aircraftMACAddr[4];
-        buf->recipient[5] = &_aircraftMACAddr[5];
+        buf->recipient[0] = _aircraftMACAddr[0]; // Targeting the aircraft MAC address
+        buf->recipient[1] = _aircraftMACAddr[1];
+        buf->recipient[2] = _aircraftMACAddr[2];
+        buf->recipient[3] = _aircraftMACAddr[3];
+        buf->recipient[4] = _aircraftMACAddr[4];
+        buf->recipient[5] = _aircraftMACAddr[5];
     }
 
     buf->ypr[0] = _cmdYawRate;
     buf->ypr[1] = _cmdPitch;
     buf->ypr[2] = _cmdRoll;
+    buf->throttle = _cmdThrottlePercentage;
 
     switch(send_param->type)
     {
@@ -308,23 +331,16 @@ void espnow_data_prepare(espnow_send_param_t *send_param)
         break;
         default:
     }
-    buf->throttle = _cmdThrottlePercentage;
+    
     buf->state = state;
     buf->packet_ID = esp_random(); // Because we send redundant packets to deal with packet loss  
-                                   // the aviation should only process one copy of the same packet
-
-    //buf->seq_num = s_espnow_seq[buf->type]++;
-    //buf->crc = 0;
-    //buf->magic = send_param->magic;
-    /* Fill all remaining bytes after the data with random values */
-    //esp_fill_random(buf->payload, send_param->len - sizeof(espnow_data_t));
-    //buf->crc = esp_crc16_le(UINT16_MAX, (uint8_t const *)buf, send_param->len);
+                                   // the recipient should only process one copy of the same packet
 }
 
 static esp_err_t ESP_NOW_init()
 {
     esp_read_mac(_remoteMACAddr, ESP_MAC_WIFI_STA); // For use in display of own MAC address
-    ESP_LOGI("AAZZ", "I know my MAC address");
+    ESP_LOGI("ESPN", "I know my MAC address");
     //espnow_send_param_t *send_param;
 
     remote_conn_queue = xQueueCreate(ESPNOW_QUEUE_SIZE, sizeof(espnow_event_t));
@@ -332,7 +348,7 @@ static esp_err_t ESP_NOW_init()
         //ESP_LOGE(TAG, "Create mutex fail");
         return ESP_FAIL;
     }
-    ESP_LOGI("AAZZ", "I have created a queue...");
+    ESP_LOGI("ESPN", "I have created a queue...");
     /* Initialize ESPNOW and register sending and receiving callback function. */
     ESP_ERROR_CHECK( esp_now_init() );
     ESP_ERROR_CHECK( esp_now_register_send_cb(espnow_send_cb) );
@@ -342,11 +358,11 @@ static esp_err_t ESP_NOW_init()
 #endif
     /* Set primary master key. */
     ESP_ERROR_CHECK( esp_now_set_pmk((uint8_t *)CONFIG_ESPNOW_PMK) );
-    ESP_LOGI("AAZZ", "I have initialized one part.");
+    //ESP_LOGI("ESPN", "I have initialized one part.");
     /* Add broadcast peer information to peer list. */
     esp_now_peer_info_t *peer = (esp_now_peer_info_t *) malloc(sizeof(esp_now_peer_info_t));
     if (peer == NULL) {
-        ESP_LOGE("AAZZ", "Malloc peer information fail");
+        ESP_LOGE("ESPN", "Malloc peer information fail");
         vSemaphoreDelete(remote_conn_queue);
         esp_now_deinit();
         return ESP_FAIL;
@@ -358,17 +374,17 @@ static esp_err_t ESP_NOW_init()
     memcpy(peer->peer_addr, _remoteMACAddr, ESP_NOW_ETH_ALEN);
     ESP_ERROR_CHECK( esp_now_add_peer(peer) );
     free(peer);
-    ESP_LOGI("AAZZ", "I have initialized 2 part");
+    //ESP_LOGI("ESPN", "I have initialized 2 part");
      /* Initialize sending parameters. */
     espnow_send_param_t *pingpacket = (espnow_send_param_t *) malloc(sizeof(espnow_send_param_t));
     if (pingpacket == NULL) {
-        ESP_LOGE("AAZZ", "Malloc send parameter fail");
+        ESP_LOGE("ESPN", "Malloc send parameter fail");
         vSemaphoreDelete(remote_conn_queue);
         esp_now_deinit();
         return ESP_FAIL;
     }
     
-    ESP_LOGI("AAZZ", "I have initialized 3 part");
+    //ESP_LOGI("ESPN", "I have initialized 3 part");
         memset(pingpacket, 0, sizeof(espnow_send_param_t));
         pingpacket->unicast = false;
         pingpacket->broadcast = true;
@@ -381,9 +397,9 @@ static esp_err_t ESP_NOW_init()
 
         pingpacket->type = 0;
 
-    ESP_LOGI("AAZZ", "I have initialized 4 part");
+    //ESP_LOGI("ESPN", "I have initialized 4 part");
         if (pingpacket->buffer == NULL) {
-            ESP_LOGE("AAZZ", "Malloc send buffer fail");
+            ESP_LOGE("ESPN", "Malloc send buffer fail");
             free(pingpacket);
             vSemaphoreDelete(remote_conn_queue);
             esp_now_deinit();
@@ -400,6 +416,74 @@ static esp_err_t ESP_NOW_init()
         
         ESP_LOGI("PING", "PACKET TEST COMPLETED!");
     return ESP_OK;
+}
+
+/// @brief Loadly broadcast the data to all listeners...
+/// @param data The data send parameters
+/// @return whether it was sent out successfully
+static esp_err_t esp_now_blast(espnow_send_param_t *data)
+{
+    /* Start sending broadcast ESPNOW data. */
+    data->dest_mac[0] = 0xFF; // For the broadcasting, send FF:FF:FF:FF:FF:FF
+    data->dest_mac[1] = 0xFF;
+    data->dest_mac[2] = 0xFF;
+    data->dest_mac[3] = 0xFF;
+    data->dest_mac[4] = 0xFF;
+    data->dest_mac[5] = 0xFF;
+
+    esp_now_peer_info_t peerInfo = {};
+    memcpy(&peerInfo.peer_addr, data->dest_mac, 6);
+    if (!esp_now_is_peer_exist(data->dest_mac))
+    {
+        esp_now_add_peer(&peerInfo); // Add peer in case we don't have it for some reason
+    }
+    
+    esp_err_t has_err = pdFALSE;
+
+    ESP_LOGI("ESPN", "START BROADCAST to %02X:%02X:%02X:%02X:%02X:%02X", data->dest_mac[0],data->dest_mac[1],data->dest_mac[2],data->dest_mac[3],data->dest_mac[4],data->dest_mac[5]);
+
+    for (size_t i = 0; i < data->count; i++)
+    {
+        ESP_LOGD("ESPN", "Packet_Repeated_Send %X", i);
+        has_err = esp_now_send(data->dest_mac, data->buffer, data->len);
+        vTaskDelay(data->delay);
+    }
+
+    ESP_LOGI("ESPN", "FINISHED BROADCAST to %02X:%02X:%02X:%02X:%02X:%02X", data->dest_mac[0],data->dest_mac[1],data->dest_mac[2],data->dest_mac[3],data->dest_mac[4],data->dest_mac[5]);
+    return (has_err);
+}
+
+/// @brief Loadly broadcast the data to all listeners...
+/// @param data The data send parameters
+/// @return whether it was sent out successfully
+static esp_err_t esp_now_targeted(espnow_send_param_t *data)
+{
+    data->dest_mac[0] = _aircraftMACAddr[0]; // For the targeted send, direct to aircraft mac address
+    data->dest_mac[1] = _aircraftMACAddr[1];
+    data->dest_mac[2] = _aircraftMACAddr[2];
+    data->dest_mac[3] = _aircraftMACAddr[3];
+    data->dest_mac[4] = _aircraftMACAddr[4];
+    data->dest_mac[5] = _aircraftMACAddr[5];
+
+    esp_now_peer_info_t peerInfo = {};
+    memcpy(&peerInfo.peer_addr, data->dest_mac, 6);
+    if (!esp_now_is_peer_exist(data->dest_mac))
+    {
+        esp_now_add_peer(&peerInfo); // Add peer in case we don't have it for some reason
+    }
+
+    ESP_LOGI("ESPN", "START TARGET SEND to %02X:%02X:%02X:%02X:%02X:%02X", data->dest_mac[0],data->dest_mac[1],data->dest_mac[2],data->dest_mac[3],data->dest_mac[4],data->dest_mac[5]);
+    esp_err_t has_err = pdFALSE;
+    
+    for (size_t i = 0; i < data->count; i++)
+    {
+        ESP_LOGD("ESPN", "Packet_Repeated_Send %X", i);
+        has_err = esp_now_send(data->dest_mac, data->buffer, data->len);
+        vTaskDelay(data->delay);
+    }
+
+    ESP_LOGI("ESPN", "FINISHED TARGET SEND to %02X:%02X:%02X:%02X:%02X:%02X", data->dest_mac[0],data->dest_mac[1],data->dest_mac[2],data->dest_mac[3],data->dest_mac[4],data->dest_mac[5]);
+    return (has_err);
 }
 
 /**
@@ -601,13 +685,20 @@ static void LCD_init()
 static void esp_now_ping(void* param)
 {
     TickType_t lastTaskTime = xTaskGetTickCount();
-    const TickType_t delay_time = pdMS_TO_TICKS(2500);
+    TickType_t delay_time = pdMS_TO_TICKS(2500);
     
     potential_connections = xQueueCreate(8, sizeof(_remoteMACAddr));
 
-    char seensofar[16];
+    char seensofar[16]; // I don't think this is even used anymore
 
     uint8_t num_potential_conn = 0;
+    
+    espnow_event_t evt; // We use this in this task to check if connection exists...
+    uint8_t recv_state = 0;
+    uint16_t recv_seq = 0;
+    int recv_magic = 0;
+    bool is_broadcast = false;
+    int ret;
 
     //LCD_clear_line(1);
 
@@ -617,70 +708,94 @@ static void esp_now_ping(void* param)
         ESP_LOGI("HELLO","??");
         switch(state)
         {   
-            case 1:
-            // Broadcast message and wait for response...
-            ESP_LOGI("Ping","Pong");
-            num_potential_conn = uxQueueMessagesWaiting(potential_connections); // Number of devices currently found
-            
-            if(num_potential_conn > 0)
-            {
-                ESP_LOGI("ESPN","Found %02X device", num_potential_conn);
-                state = 2;
-                break; // Stop and move to state 2 once we have found potential connections...
-            }
-            else
-            {
-                //LCD_disp("NONE FOUND YET",1,false);
-                ESP_LOGI("ESPN","None found yet!");
-            }
-
-            ESP_LOGI("ESPN","Preparing to broadcast payload for discovery!");
-
-            /* Initialize sending parameters. */
-            espnow_send_param_t *pingpacket = (espnow_send_param_t *) malloc(sizeof(espnow_send_param_t));
-            if (pingpacket == NULL) 
-            {
-                //ESP_LOGE(TAG, "Malloc send parameter fail");
-                vSemaphoreDelete(remote_conn_queue);
-                esp_now_deinit();
-                //return ESP_FAIL;
-            }
-            memset(pingpacket, 0, sizeof(espnow_send_param_t));
-            pingpacket->unicast = false;
-            pingpacket->broadcast = true;
-            pingpacket->state = 0;
-            pingpacket->magic = 999999;
-            pingpacket->count = 25;
-            pingpacket->delay = 10/portTICK_PERIOD_MS;
-            pingpacket->len = sizeof(espnow_data_t);
-            pingpacket->buffer = (uint8_t*) malloc(sizeof(espnow_data_t));
-            pingpacket->type = 0;
-
-            if (pingpacket->buffer == NULL) {
-                //ESP_LOGE(TAG, "Malloc send buffer fail");
-                free(pingpacket);
-                vSemaphoreDelete(remote_conn_queue);
-                esp_now_deinit();
-                //return ESP_FAIL;
-            }
-            
-            //memcpy(pingpacket->dest_mac, _aircraftMACAddr, ESP_NOW_ETH_ALEN);
-            *pingpacket->dest_mac = malloc(sizeof(_aircraftMACAddr));
-            *pingpacket->dest_mac = _aircraftMACAddr;
-            //espnow_data_prepare(pingpacket);
-
-            ESP_LOGI("PING", "PACKET READY!");
-
-            espnow_data_prepare(pingpacket);
-
-            ESP_LOGI("PING", "PINGING!!!!!");
-
-            
-
-            free(pingpacket);
-            //free(pingpacket_data);
+            case 0: // Do nothing until the USB is plugged in
+                delay_time = pdMS_TO_TICKS(2500);
             break;
+            case 1: // Broadcast message and wait for response...
+                delay_time = pdMS_TO_TICKS(2500);
+                
+                while(xQueueReceive(remote_conn_queue, &evt, pdMS_TO_TICKS(125)) == pdTRUE) // First: see if we have already received any ping messages
+                {
+                    if(evt.id == ESPNOW_RECV_CB) // Make sure the queue data is a reception
+                    {
+                        espnow_event_recv_cb_t *recv_cb = &evt.info.recv_cb;
+                        ESP_LOGD("Ping","Examining received message!");
+                        
+                    }
+                    else if(evt.id == ESPNOW_SEND_CB)
+                    {
+                        ESP_LOGD("Ping", "Ping message was previously sent.");
+                    }
+                }
 
+                ESP_LOGI("Ping","Pong");
+                num_potential_conn = uxQueueMessagesWaiting(potential_connections); // Number of devices currently found
+                
+                if(num_potential_conn > 0)
+                {
+                    ESP_LOGI("ESPN","Found %02X device(s), will no longer ping!", num_potential_conn);
+                    state = 2;
+                    break; // Stop and move to state 2 once we have found potential connections...
+                }
+                else
+                {
+                    //LCD_disp("NONE FOUND YET",1,false);
+                    ESP_LOGI("ESPN","None found yet!");
+                }
+
+                ESP_LOGI("ESPN","Preparing to broadcast payload for discovery!");
+
+                /* Initialize sending parameters. */
+                espnow_send_param_t *pingpacket = (espnow_send_param_t *) malloc(sizeof(espnow_send_param_t));
+                if (pingpacket == NULL) 
+                {
+                    //ESP_LOGE(TAG, "Malloc send parameter fail");
+                    vSemaphoreDelete(remote_conn_queue);
+                    esp_now_deinit();
+                    //return ESP_FAIL;
+                }
+                memset(pingpacket, 0, sizeof(espnow_send_param_t));
+                pingpacket->unicast = false;
+                pingpacket->broadcast = true;
+                pingpacket->state = 0;
+                pingpacket->magic = 999999;
+                pingpacket->count = 25;
+                pingpacket->delay = 10/portTICK_PERIOD_MS;
+                pingpacket->len = sizeof(espnow_data_t);
+                pingpacket->buffer = (uint8_t*) malloc(sizeof(espnow_data_t));
+                pingpacket->type = 0;
+
+                if (pingpacket->buffer == NULL) {
+                    //ESP_LOGE(TAG, "Malloc send buffer fail");
+                    free(pingpacket);
+                    vSemaphoreDelete(remote_conn_queue);
+                    esp_now_deinit();
+                    //return ESP_FAIL;
+                }
+                
+                memcpy(pingpacket->dest_mac, &_aircraftMACAddr, ESP_NOW_ETH_ALEN);
+                espnow_data_prepare(pingpacket);
+
+                ESP_LOGI("PING", "PACKET READY!");
+
+                if(esp_now_blast(pingpacket) != ESP_OK)
+                {
+                ESP_LOGE("PING", "Could not ping!!");
+                }
+                else
+                {
+                ESP_LOGI("PING", "PINGING!!!!!");
+                }
+                //ESP_ERROR_CHECK(esp_now_blast(pingpacket));
+
+                free(pingpacket);
+            break;
+            case 2: // In case 2, we do not ping at all.
+                delay_time = pdMS_TO_TICKS(125);
+            break;
+            case 3: // In state 3, we are connected to the remote, so we will actively send remote control packets to the airplane
+                delay_time = pdMS_TO_TICKS(125);
+            break;
             default:
         }
     
@@ -690,35 +805,34 @@ static void esp_now_ping(void* param)
     vTaskDelete(NULL);
 }
 
-/// @brief Check if we should transmit to flight computer every 50 ms (if there is something to send in queue)
-/// @param param 
-static void esp_now_transmit(void* param)
-{
-    TickType_t lastTaskTime = xTaskGetTickCount();
-    const TickType_t delay_time = pdMS_TO_TICKS(50);
+// [NOTE: FUNCTION BELOW IS NO LONGER USED]
+// /// @brief Check if we should transmit to flight computer every 50 ms (if there is something to send in queue)
+// /// @param param 
+// static void esp_now_transmit(void* param)
+// {
+//     TickType_t lastTaskTime = xTaskGetTickCount();
+//     const TickType_t delay_time = pdMS_TO_TICKS(50);
     
-    //potential_connections = xQueueCreate(8,sizeof(_remoteMACAddr));
+//     //potential_connections = xQueueCreate(8,sizeof(_remoteMACAddr));
 
-    char seensofar[16];
+//     char seensofar[16];
 
-    uint8_t num_potential_conn = 00;
+//     uint8_t num_potential_conn = 00;
 
-    //LCD_clear_line(1);
+//     //LCD_clear_line(1);
 
-    while(true)
-    {
-        if(state == 3) // Transmit mode is state 3 - we will broadcast and also take pingbacks as acknowledgements
-        {
-            // Broadcast message and wait for response...
-            ESP_LOGI("Ping","Pong");
-            
-
-        }
-        vTaskDelayUntil(&lastTaskTime, delay_time);
-    }
+//     while(true)
+//     {
+//         if(state == 3) // Transmit mode is state 3 - we will broadcast and also take pingbacks as acknowledgements
+//         {
+//             // Broadcast message and wait for response...
+//             ESP_LOGI("Ping","Pong");
+//         }
+//         vTaskDelayUntil(&lastTaskTime, delay_time);
+//     }
     
-    vTaskDelete(NULL);
-}
+//     vTaskDelete(NULL);
+// }
 
 /// @brief For updating the LCD screen with relevant information 
 /// (I think it is rate-limited because the screen has a slower refresh rate than the other sub-systems)
@@ -846,6 +960,56 @@ void parseInput() // The input parsing test function
     lastButtonPress = last_stick_report.buttons_a;
 }
 
+void AircraftPairingSelection(uint8_t *macAddrTemp)
+{
+    if(lastHatSwitchPress != last_stick_report.hat)
+    {
+        switch (last_stick_report.hat)
+        {
+            case 2:
+                if(xQueueReceive(potential_connections, macAddrTemp, 0) != pdTRUE)
+                {
+                    xQueueReset(potential_connections);
+                    state = 1; // Queue is empty, start scanning again.
+                    ESP_LOGI("ACFT-Select", "No more aircraft in queue, planning on rescanning!");
+                    break;
+                }
+                else
+                {
+                    ESP_LOGI("ACFT-Select","Currently selected aircraft with ADDR %02X:%02X:%02X:%02X:%02X:%02X", macAddrTemp[0],macAddrTemp[1],macAddrTemp[2],macAddrTemp[3],macAddrTemp[4],macAddrTemp[5]);
+                }
+                break;
+            default:
+        }
+    }
+    if(lastButtonPress != last_stick_report.buttons_a)
+    {
+        switch (last_stick_report.buttons_a)
+        {
+            case 1:
+                for(int ii = 0; ii < ESP_NOW_ETH_ALEN; ii++)
+                {
+                    _aircraftMACAddr[ii] = macAddrTemp[ii];
+                }
+                break;
+            
+            case 2:
+                xQueueReset(potential_connections);
+                state = 1;
+                ESP_LOGE("ACFT-Select","Out of options, rescanning!");
+                break;
+            default:
+        }
+    }
+
+    lastStickR = last_stick_report.x;
+    lastStickP = last_stick_report.y;
+    lastStickY = last_stick_report.twist;
+    throttlePos = last_stick_report.slider;
+    lastHatSwitchPress = last_stick_report.hat;
+    lastButtonPress = last_stick_report.buttons_a;
+}
+
 /// @brief Check connection to remote control (Every 25 ms) 
 /// @param pvParam 
 static void remote_conn(void* pvParam)
@@ -854,7 +1018,8 @@ static void remote_conn(void* pvParam)
     const TickType_t delay_time = pdMS_TO_TICKS(25);
 
     TaskHandle_t search_for_remote_task=NULL; // The esp_now_ping task
-    //uint32_t ram_remaining = xPortGetFreeHeapSize();
+
+    uint8_t macADDRTemp[ESP_NOW_ETH_ALEN] = {0,0,0,0,0,0};
     
     while(true)
     {
@@ -875,24 +1040,7 @@ static void remote_conn(void* pvParam)
                 //In the meantime, we do nothing...
                 break;
             case 2:
-                // Collected multiple potential in queue, now we want to select the right one to connect to
-                switch(lastButtonPress)
-                {
-                    case 1: // Trigger pulled, we connect to the selected in queue
-
-                    break;
-                    case 2: // Reset, clear queue and retry
-                        xQueueReset(potential_connections);
-                        state = 1;
-                    default: // Do nothing by default
-                    break;
-                }
-                switch(lastHatSwitchPress)
-                {
-                    case 8:
-                        // Nothing happened...
-                    break;
-                }
+                AircraftPairingSelection(&macADDRTemp);
                 break;
             case 3:
                 // In this case, we are connected to the FC and all we need is to run pre-flight routine

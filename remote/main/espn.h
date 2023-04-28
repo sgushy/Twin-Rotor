@@ -10,7 +10,7 @@
 #define ESPNOW_WIFI_IF   WIFI_IF_AP
 #endif
 
-#define ESPNOW_QUEUE_SIZE           6
+#define ESPNOW_QUEUE_SIZE           8
 
 #define IS_BROADCAST_ADDR(addr) (memcmp(addr, _remoteMACAddr, ESP_NOW_ETH_ALEN) == 0)
 
@@ -49,11 +49,11 @@ enum {
 
 /* User defined field of ESPNOW data in this example. */
 typedef struct {
-    uint8_t type;                         // Broadcast or unicast ESPNOW data.
+    uint8_t type;                         // MSG_TYPE [0 - Ping],[1 - Ping response],[2 - Handshake req],[3 - Handshake response],[4 - Remote update],[5 - Remote update response]
     uint8_t sender[6];                    // MAC address of sender
     uint8_t recipient[6];                 // MAC address of intended recipient
     uint8_t state;                        // The state of the sender's state machine
-    uint16_t packet_ID;                   // Packet ID, receiver can ignore redundant
+    uint16_t packet_ID;                   // Packet ID so that receiver can ignore redundant
     float ypr[3];                         // Desired yaw [0], pitch [1], roll [2] (all floating point).
     float throttle;                       // Throttle 
     uint8_t button;                       // Number of button pressed (if value is 88, this is actually a ping)
