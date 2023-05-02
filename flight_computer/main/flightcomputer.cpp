@@ -100,11 +100,14 @@ ledc_channel_config_t servo2_channel = {
     .hpoint         = 0
 };
 
-// Define PWM parameters (for servo control)
+// Define PWM parameters (for servo control) - May need to change since servo specs are unclear
 #define LEDC_SERVO_FREQUENCY          50 
-#define SERVO_PWM_MIN                 3277
-#define SERVO_PWM_MAX                 6554
-#define SERVO_PWM_MID                 4916
+//#define SERVO_PWM_MIN                 3277
+//#define SERVO_PWM_MAX                 6554
+//#define SERVO_PWM_MID                 4916
+#define SERVO_PWM_MIN                 4916 // corresponds to 0 deg servo; this is approximately -33 degrees from horizontal
+#define SERVO_PWM_MAX                 5877 // corresponds to 66 deg servo; approximately +33 degrees from horizontal
+#define SERVO_PWM_MID                 5396 // Corresponds to ~33 deg servo, which is about the horizontal rotor plane
 
 // Define I2C parameters - Note: ESP32 can handle 2 I2C ports natively
 // but we will need to make sure that it can handle simultaneous broadcast/receive
@@ -120,10 +123,10 @@ ledc_channel_config_t servo2_channel = {
 #define ADDR_IMU_F           0x68 // Primary IMU memory address for I2C connection
 #define ADDR_IMU_R           0x69 // Secondary IMU memory address for I2C connection
 
-#define ADDR_LCD_SCREEN      0x3c // Address of the LCD screen (may or may not be used in the final product)
+#define ADDR_LCD_SCREEN      0x3c // Address of the LCD screen
 
-#define LQI_PERIOD_MS        50 // Period to discretize LQI execution time by   
-#define IMU_PERIOD_MS        41
+#define LQI_PERIOD_MS        50 // Period to discretize LQI execution time   
+#define IMU_PERIOD_MS        41 // Period to discretize IMU read time
 
 #define MAX_THRUST_N         16.778f // Approximate max thrust per propeller in newtons
 
@@ -185,9 +188,9 @@ uint16_t last_packetID = 0;
 uint8_t last_button_press = 0;
 
 // The commanded angles and yaw rate will be received from the remote (based on position of remote controller)
-volatile float _cmdThrottlePercentage = 0; // Throttle strength in percent
+volatile float _cmdThrottlePercentage = 0; // Throttle strength in percent (should be between 0 - 100)
 
-// The following variables are to be used for the control loop
+// The following variables are to be used for the control loop (Are they?)
 // these are to be converted from the commanded pitch/roll/yaw/throttle to values that are 
 volatile uint8_t _forcePercentageLeft = 0; // Commanded % of left thrust, added to open loop thrust
 volatile uint8_t _forcePercentageRight = 0; // Commanded % of left thrust, added to open loop thrust
@@ -225,15 +228,18 @@ static void i2c_FC_init() {
 /// @brief Initialize I2C slave for transmitting data to datalink computer
 static void i2c_DL_init() {
     // Configure the I2C slave interface
-    i2c_config_t conf;
-    conf.mode = I2C_MODE_SLAVE; // (is slave for flight computer, master for datalink computer)
-    conf.sda_io_num = (gpio_num_t)SDA_PIN_2_DL;
-    conf.scl_io_num = (gpio_num_t)SCL_PIN_2_DL;
-    conf.sda_pullup_en = GPIO_PULLUP_ENABLE;
-    conf.scl_pullup_en = GPIO_PULLUP_ENABLE;
-    conf.slave.slave_addr = ADDR_ESP_SLAV,
-    i2c_param_config(I2C_NUM_1, &conf);
-    i2c_driver_install(I2C_NUM_1, conf.mode, sizeof(DL_debug_info_t), sizeof(DL_debug_info_t), 0);
+    i2c_config_t conf2;
+    conf2.mode = I2C_MODE_SLAVE; // (is slave for flight computer, master for datalink computer)
+    conf2.sda_io_num = (gpio_num_t)SDA_PIN_2_DL;
+    conf2.scl_io_num = (gpio_num_t)SCL_PIN_2_DL;
+    conf2.sda_pullup_en = GPIO_PULLUP_ENABLE;
+    conf2.scl_pullup_en = GPIO_PULLUP_ENABLE;
+    conf2.slave.addr_10bit_en = 0;
+    conf2.slave.slave_addr = ADDR_ESP_SLAV;
+    conf2.clk_flags = 0;
+    conf2.slave.maximum_speed = 400000; // Apparently this is needed for the I2C to work (no explanation given in docs)
+    i2c_param_config(I2C_NUM_1, &conf2);
+    i2c_driver_install(I2C_NUM_1, conf2.mode, 128, 128, 0); // For some reason SW I2C buffer must be > 100 (no explanation given in docs)
 }
 
 /* WiFi should start before using ESPNOW */
@@ -350,7 +356,7 @@ void espnow_data_prepare(espnow_send_param_t *send_param)
     buf->ypr[0] = ypr[0]; // Here, reply with the yaw, pitch, roll angles
     buf->ypr[1] = ypr[1];
     buf->ypr[2] = ypr[2];
-    buf->throttle = _cmdThrottlePercentage;
+    buf->throttle = _cmdThrottlePercentage/100;
 
     switch(send_param->type)
     {
@@ -458,7 +464,7 @@ int espnow_data_parse(uint8_t *data, uint16_t data_len, uint8_t *state, uint16_t
 
     *state = buf->state;
     
-    if(buf->type == 4)
+    if(buf->type == 4) // Regular remote connection
     {
         for(int ii = 0; ii < 6; ii++)
         {
@@ -478,7 +484,7 @@ int espnow_data_parse(uint8_t *data, uint16_t data_len, uint8_t *state, uint16_t
 
         last_button_press = buf->button;
         
-        _cmdThrottlePercentage = buf->throttle;
+        _cmdThrottlePercentage = buf->throttle * 100; // Convert the float of 0-1 to a percentage
 
         _lastCommunicationWithRemote = 0; // We just heard from the remote!
 
@@ -599,7 +605,7 @@ int espnow_data_parse(uint8_t *data, uint16_t data_len, uint8_t *state, uint16_t
         free(response_packet);
     }
 
-    else if(buf->type == 2 && buf->hat == 88) // This must be a reply to our aircraft connection request!
+    else if(buf->type == 2 && buf->hat == 88) // This must be a connection request!
     {
         for(int ii = 0; ii < 6; ii++)
         {
@@ -782,7 +788,7 @@ static void update_LCD(void* param)
         switch (_state)
         {
             case 0:
-                if(_remoteMACAddr[0] != 0 && _remoteMACAddr[1] != 0)
+                if(_remoteMACAddr[0] != 0 && _remoteMACAddr[1] != 0 && _remoteMACAddr[2] != 0)
                 {
                     snprintf(YPRstr, sizeof(YPRstr), "%02X:%02X:%02X:%02X%02X%02X", _remoteMACAddr[0],_remoteMACAddr[1],_remoteMACAddr[2],_remoteMACAddr[3],_remoteMACAddr[4],_remoteMACAddr[5]);
                     LCD_disp(YPRstr,0,true);
@@ -805,7 +811,7 @@ static void update_LCD(void* param)
                 LCD_disp(YPRstr,1,false);
                 snprintf(YPRstr, sizeof(YPRstr), "Y%.1fP%.1fR%.1f", ypr_target[0]* 180/M_PI, ypr_target[1]* 180/M_PI, ypr_target[2]* 180/M_PI);
                 LCD_disp(YPRstr,2,true); 
-                snprintf(YPRstr, sizeof(YPRstr), "T%.3fS%XB%X", _cmdThrottlePercentage, _state, last_button_press);
+                snprintf(YPRstr, sizeof(YPRstr), "T%.1fS%XB%X", _cmdThrottlePercentage, _state, last_button_press);
                 LCD_disp(YPRstr,3,false); 
                 break;
             case 2:
@@ -877,6 +883,10 @@ static void remote_conn(void* pvParam)
 
         _lastCommunicationWithRemote += delay_time; // Increment counter
         if(_lastCommunicationWithRemote > CONN_TIMEOUT)
+        {
+            // Timed out
+        }
+
         vTaskDelayUntil(&lastTaskTime, delay_time);
     }
     vTaskDelete(NULL);
@@ -907,9 +917,13 @@ static void motors(void* pvParam)
                 // Open loop motor control testing fo today
                 ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, _throttleRight);
                 ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1, _throttleLeft);
-                
+                //ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_2, _servoRight);
+                //ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_3, _servoLeft);
+
                 ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
                 ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1);
+                //ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_2);
+                //ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_3);
                 break;
             case 2: case 3: case 4:
                 ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, _throttleRight);
@@ -1038,14 +1052,14 @@ static void LQI(void* pvParam)
                 // Should put here a test or something (or maybe in the motors section)
                 // At least for the servos range of motion
                 // Open-loop test of servos
-                _servoRight = ypr_target[0] * (SERVO_PWM_MAX - SERVO_PWM_MIN) + SERVO_PWM_MID;
-                _servoLeft = ypr_target[0] * (SERVO_PWM_MAX - SERVO_PWM_MIN) + SERVO_PWM_MID;
+                _servoRight = ypr_target[0] * 4 * (SERVO_PWM_MAX - SERVO_PWM_MIN) + SERVO_PWM_MID;
+                _servoLeft = ypr_target[0] * -4 * (SERVO_PWM_MAX - SERVO_PWM_MIN) + SERVO_PWM_MID;
 
                 // Open-loop throttle test
-                 _throttleRight = _cmdThrottlePercentage * (ENGINE_PWM_MAX - ENGINE_PWM_MIN) + ENGINE_PWM_MIN;
-                _throttleLeft = _cmdThrottlePercentage * (ENGINE_PWM_MAX - ENGINE_PWM_MIN) + ENGINE_PWM_MIN; 
+                 _throttleRight = _cmdThrottlePercentage/100 * (ENGINE_PWM_MAX - ENGINE_PWM_MIN) + ENGINE_PWM_MIN;
+                _throttleLeft = _cmdThrottlePercentage/100 * (ENGINE_PWM_MAX - ENGINE_PWM_MIN) + ENGINE_PWM_MIN; 
                 break;
-            case 2: case 3: case 4:
+            case 2: case 3: 
                 // Fly state
                 // update accumulator values
                 for (int i = 0; i < 3; i++) {
@@ -1082,6 +1096,48 @@ static void LQI(void* pvParam)
                     + SERVO_PWM_MID;
                 _servoLeft = u[3] / (u[1] * 1.570796f) * (SERVO_PWM_MAX - SERVO_PWM_MIN)
                     + SERVO_PWM_MID;
+                break;
+
+            case 4: //
+                // Lost connection to remote! Try to level self and land
+                ypr_target[0] = 0; ypr_target[1] = 0; ypr_target[2] = 0;
+                _cmdThrottlePercentage -= 5/pdMS_TO_TICKS(1000) * pdMS_TO_TICKS(LQI_PERIOD_MS); // Decrease throttle by 0.05 (5%) per second
+                // update accumulator values
+                for (int i = 0; i < 3; i++) {
+                    ypr_accum[i] += (ypr_target[i] - ypr[i]) * LQI_PERIOD_MS / 1000;
+                }
+
+                // first zero u
+                for (int i = 0; i < 4; i++) {
+                    u[i] = 0;
+                }
+                x[0] = ypr[0];
+                x[1] = ypr_prime[0];
+                x[2] = ypr[1];
+                x[3] = ypr_prime[1];
+                x[4] = ypr[2];
+                x[5] = ypr_prime[2];
+                x[6] = ypr_accum[0];
+                x[7] = ypr_accum[1];
+                x[8] = ypr_accum[2];
+                // multiply by K matrix to obtain u
+
+                for (int i = 0; i < 4; i++) {
+                    for (int j = 0; j < 9; j++) {
+                        u[i] += K[i][j] * x[j] * -1;
+                    }
+                }
+
+                // operate on u to get thrusts and angles
+                _throttleRight = _state == 4 ? 0 : u[0] / MAX_THRUST_N * (ENGINE_PWM_MAX - ENGINE_PWM_MIN)
+                    + ENGINE_PWM_MIN;
+                _throttleLeft = _state == 4 ? 0 : u[1] / MAX_THRUST_N * (ENGINE_PWM_MAX - ENGINE_PWM_MIN)
+                    + ENGINE_PWM_MIN; 
+                _servoRight = u[2] / (u[0] * 1.570796f) * (SERVO_PWM_MAX - SERVO_PWM_MIN) 
+                    + SERVO_PWM_MID;
+                _servoLeft = u[3] / (u[1] * 1.570796f) * (SERVO_PWM_MAX - SERVO_PWM_MIN)
+                    + SERVO_PWM_MID;
+                break;
                 break;
             default:
                 // It should never reach this case...
@@ -1162,7 +1218,7 @@ extern "C" void app_main(void)
     xTaskCreatePinnedToCore(LQI, "LQI", 4096, (void*) 1, 8, NULL, 1); // Control algorithm (core 1) 
 }
 
-/// @brief Test/Calibration code
+/// @brief Test/Calibration code - Disused! Especially since we now have a working remote !!
 static void Test_Calibration()
 {
     example_ledc_init();
