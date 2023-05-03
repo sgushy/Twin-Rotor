@@ -102,12 +102,12 @@ ledc_channel_config_t servo2_channel = {
 
 // Define PWM parameters (for servo control) - May need to change since servo specs are unclear
 #define LEDC_SERVO_FREQUENCY          50 
-//#define SERVO_PWM_MIN                 3277
-//#define SERVO_PWM_MAX                 6554
-//#define SERVO_PWM_MID                 4916
-#define SERVO_PWM_MIN                 4916 // corresponds to 0 deg servo; this is approximately -33 degrees from horizontal
-#define SERVO_PWM_MAX                 5877 // corresponds to 66 deg servo; approximately +33 degrees from horizontal
-#define SERVO_PWM_MID                 5396 // Corresponds to ~33 deg servo, which is about the horizontal rotor plane
+#define SERVO_PWM_MIN                 3277
+#define SERVO_PWM_MAX                 6554
+#define SERVO_PWM_MID                 4916
+//#define SERVO_PWM_MIN                 4916 // corresponds to 0 deg servo; this is approximately -33 degrees from horizontal
+//#define SERVO_PWM_MAX                 5877 // corresponds to 66 deg servo; approximately +33 degrees from horizontal
+//#define SERVO_PWM_MID                 5396 // Corresponds to ~33 deg servo, which is about the horizontal rotor plane
 
 // Define I2C parameters - Note: ESP32 can handle 2 I2C ports natively
 // but we will need to make sure that it can handle simultaneous broadcast/receive
@@ -154,7 +154,7 @@ float ypr_prime[3] = {0, 0, 0};
 float ypr_old[3] = {0, 0, 0};
 
 // Global state machine variable(s) - will we still use?
-volatile int _state = 0; // 0 = idle, 1 = connected to remote, 2 = fly, 3 = auto hover, 4 = calibration mode
+volatile int _state = 4; // 0 = idle, 1 = connected to remote, 2 = fly, 3 = auto hover, 4 = calibration mode
 volatile bool _landed = true; // whether the aviation is on the ground 
                              // starts as true, but will be judged using accelerometer jolt in flight
                              
@@ -613,8 +613,8 @@ int espnow_data_parse(uint8_t *data, uint16_t data_len, uint8_t *state, uint16_t
         }
 
         ESP_LOGI("Ping","CONNECTED TO REMOTE - %02X:%02X:%02X:%02X:%02X:%02X", _remoteMACAddr[0], _remoteMACAddr[1], _remoteMACAddr[2], _remoteMACAddr[3], _remoteMACAddr[4], _remoteMACAddr[5]);
-        
-        _state = 1; // We are now connected to the remote!
+        if (_state == 0)
+            _state = 1; // We are now connected to the remote!
         *last_packetID = buf->packet_ID; // Update the packet ID, we have received this data!
 
         /* Reply to sender */
@@ -828,7 +828,8 @@ static void update_LCD(void* param)
                 break;
             case 4:
                 LCD_disp("STATE 4          ",0,false);
-                LCD_disp("CAL              ",1,false);
+                snprintf(YPRstr, sizeof(YPRstr), "L%liR%li      ", _servoLeft, _servoRight);
+                LCD_disp(YPRstr,1,false);
                 LCD_disp("A                ",2,false);
                 LCD_disp("ENG-OFF          ",3,true); 
                 break;
@@ -900,6 +901,7 @@ static void motors(void* pvParam)
     TickType_t lastTaskTime = xTaskGetTickCount();
     const TickType_t delay_time = pdMS_TO_TICKS(15);
 
+
     while(true)
     {
         switch (_state)
@@ -913,19 +915,7 @@ static void motors(void* pvParam)
                 //ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_3, _servoLeft);
                 //ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_2);
                 //ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_3);
-
                 // Open loop motor control testing fo today
-                ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, _throttleRight);
-                ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1, _throttleLeft);
-                //ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_2, _servoRight);
-                //ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_3, _servoLeft);
-
-                ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
-                ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1);
-                //ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_2);
-                //ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_3);
-                break;
-            case 2: case 3: case 4:
                 ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, _throttleRight);
                 ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1, _throttleLeft);
                 ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_2, _servoRight);
@@ -935,6 +925,17 @@ static void motors(void* pvParam)
                 ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1);
                 ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_2);
                 ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_3);
+                break;
+            case 2: case 3: case 4:
+                // ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, _throttleRight);
+                // ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1, _throttleLeft);
+                // ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_2, _servoRight);
+                // ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_3, _servoLeft);
+
+                // ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+                // ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1);
+                // ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_2);
+                // ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_3);
                 break;
             default:
                 // It should never reach this case...
@@ -995,9 +996,9 @@ static void IMU(void* pvParam)
 	        mpu.getFIFOBytes(fifoBuffer, packetSize);
 	 		mpu.dmpGetQuaternion(&q, fifoBuffer);
 			mpu.dmpGetGravity(&gravity, &q);
-            for (int i = 0; i < 3; i++) {ypr_old[i] = ypr[i];}
 			mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
-            for (int i = 0; i < 3; i++) {ypr_prime[i] = (ypr[i] - ypr_old[i])/(IMU_PERIOD_MS/1000);}
+            for (int i = 0; i < 3; i++) {ypr_prime[i] = (ypr[i] - ypr_old[i])/((float)(IMU_PERIOD_MS)/1000.0f);}
+            for (int i = 0; i < 3; i++) {ypr_old[i] = ypr[i];}
 	    }
 
 	    //Best result is to match with DMP refresh rate
@@ -1049,21 +1050,24 @@ static void LQI(void* pvParam)
                 // Do nothing (no control happens while the system is off)
                 break;
             case 1:
+                if (last_button_press == 3) {
+                    _state = 4;
+                }
                 // Should put here a test or something (or maybe in the motors section)
                 // At least for the servos range of motion
                 // Open-loop test of servos
-                _servoRight = ypr_target[0] * 4 * (SERVO_PWM_MAX - SERVO_PWM_MIN) + SERVO_PWM_MID;
-                _servoLeft = ypr_target[0] * -4 * (SERVO_PWM_MAX - SERVO_PWM_MIN) + SERVO_PWM_MID;
+                _servoRight = ypr_target[0] * 100 * (SERVO_PWM_MAX - SERVO_PWM_MIN) + SERVO_PWM_MID;
+                _servoLeft = ypr_target[0] * 100 * (SERVO_PWM_MAX - SERVO_PWM_MIN) + SERVO_PWM_MID;
 
                 // Open-loop throttle test
-                 _throttleRight = _cmdThrottlePercentage/100 * (ENGINE_PWM_MAX - ENGINE_PWM_MIN) + ENGINE_PWM_MIN;
+                _throttleRight = _cmdThrottlePercentage/100 * (ENGINE_PWM_MAX - ENGINE_PWM_MIN) + ENGINE_PWM_MIN;
                 _throttleLeft = _cmdThrottlePercentage/100 * (ENGINE_PWM_MAX - ENGINE_PWM_MIN) + ENGINE_PWM_MIN; 
                 break;
             case 2: case 3: 
                 // Fly state
                 // update accumulator values
                 for (int i = 0; i < 3; i++) {
-                    ypr_accum[i] += (ypr_target[i] - ypr[i]) * LQI_PERIOD_MS / 1000;
+                    ypr_accum[i] += (ypr_target[i] - ypr[i]) * (float)(LQI_PERIOD_MS) / 1000.0f;
                 }
 
                 // first zero u
@@ -1088,10 +1092,12 @@ static void LQI(void* pvParam)
                 }
 
                 // operate on u to get thrusts and angles
-                _throttleRight = _state == 4 ? 0 : u[0] / MAX_THRUST_N * (ENGINE_PWM_MAX - ENGINE_PWM_MIN)
-                    + ENGINE_PWM_MIN;
-                _throttleLeft = _state == 4 ? 0 : u[1] / MAX_THRUST_N * (ENGINE_PWM_MAX - ENGINE_PWM_MIN)
-                    + ENGINE_PWM_MIN; 
+                _throttleRight = ((u[0] / MAX_THRUST_N) 
+                    + (_cmdThrottlePercentage/100.0f)) 
+                    * (ENGINE_PWM_MAX - ENGINE_PWM_MIN) + ENGINE_PWM_MIN;
+                _throttleLeft = ((u[1] / MAX_THRUST_N) 
+                    + (_cmdThrottlePercentage/100.0f)) 
+                    * (ENGINE_PWM_MAX - ENGINE_PWM_MIN) + ENGINE_PWM_MIN;
                 _servoRight = u[2] / (u[0] * 1.570796f) * (SERVO_PWM_MAX - SERVO_PWM_MIN) 
                     + SERVO_PWM_MID;
                 _servoLeft = u[3] / (u[1] * 1.570796f) * (SERVO_PWM_MAX - SERVO_PWM_MIN)
@@ -1104,7 +1110,8 @@ static void LQI(void* pvParam)
                 _cmdThrottlePercentage -= 5/pdMS_TO_TICKS(1000) * pdMS_TO_TICKS(LQI_PERIOD_MS); // Decrease throttle by 0.05 (5%) per second
                 // update accumulator values
                 for (int i = 0; i < 3; i++) {
-                    ypr_accum[i] += (ypr_target[i] - ypr[i]) * LQI_PERIOD_MS / 1000;
+                    //ypr_accum[i] += (ypr_target[i] - ypr[i]) * (float)(LQI_PERIOD_MS) / 1000.0f;
+                    ypr_accum[i] = 0;
                 }
 
                 // first zero u
@@ -1128,16 +1135,20 @@ static void LQI(void* pvParam)
                     }
                 }
 
+                //ESP_LOGI("[LQI]", "X[0]: %0.1f, X[1]: %0.1f, X[2]: %0.1f, X[3]: %0.1f, X[4]: %0.1f, X[5]: %0.1f, X[6]: %0.1f, X[7]: %0.1f, X[8]: %0.1f", x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7], x[8]);
+                //ESP_LOGI("[LQI]", "ypr[0]: %0.1f, ypr[1]: %0.1f, ypr[2]: %0.1f", ypr[0], ypr[1], ypr[2]);
+                //ESP_LOGI("[LQI]", "ypr_old[0]: %0.1f, ypr_old[1]: %0.1f, ypr_old[2]: %0.1f", ypr_old[0], ypr_old[1], ypr_old[2]);
+                //ESP_LOGI("[LQI]", "ypr_prime[0]: %0.1f, ypr_prime[1]: %0.1f, ypr_prime[2]: %0.1f", ypr_prime[0], ypr_prime[1], ypr_prime[2]);
+                //ESP_LOGI("[LQI]", "U[0]: %0.1f, U[1]: %0.1f, U[2]: %0.1f, U[3]: %0.1f", u[0], u[1], u[2], u[3]);
+                ESP_LOGI("[LQI]", "_servoLeft: %0.1f, _servoRight: %0.1f", u[2] / (u[0] * 1.570796f), u[3] / (u[1] * 1.570796f));
+
                 // operate on u to get thrusts and angles
-                _throttleRight = _state == 4 ? 0 : u[0] / MAX_THRUST_N * (ENGINE_PWM_MAX - ENGINE_PWM_MIN)
-                    + ENGINE_PWM_MIN;
-                _throttleLeft = _state == 4 ? 0 : u[1] / MAX_THRUST_N * (ENGINE_PWM_MAX - ENGINE_PWM_MIN)
-                    + ENGINE_PWM_MIN; 
+                _throttleRight = ENGINE_PWM_MIN;
+                _throttleLeft = ENGINE_PWM_MIN;
                 _servoRight = u[2] / (u[0] * 1.570796f) * (SERVO_PWM_MAX - SERVO_PWM_MIN) 
                     + SERVO_PWM_MID;
                 _servoLeft = u[3] / (u[1] * 1.570796f) * (SERVO_PWM_MAX - SERVO_PWM_MIN)
                     + SERVO_PWM_MID;
-                break;
                 break;
             default:
                 // It should never reach this case...
@@ -1212,7 +1223,7 @@ extern "C" void app_main(void)
     xTaskCreatePinnedToCore(IMU, "IMU", 4096, (void*) 1, 8, NULL, 0); // Task for reading IMU sensors
     xTaskCreatePinnedToCore(remote_conn, "remote_conn", 4096, (void*) 1, 8, NULL, 0); // Task for remote control (will listen in the background)
     xTaskCreatePinnedToCore(update_LCD, "update_LCD", 4096, (void*) 1, 2, NULL, 0); // Task for screen update
-
+    vTaskDelay(5000);
     xTaskCreatePinnedToCore(motors, "motors", 4096, (void*) 1, 12, NULL, 1); // Motor actuation (core 1) - High priority
                                                                              // can interrupt controls since it is slower
     xTaskCreatePinnedToCore(LQI, "LQI", 4096, (void*) 1, 8, NULL, 1); // Control algorithm (core 1) 
