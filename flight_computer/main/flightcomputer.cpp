@@ -136,7 +136,7 @@ int center, top, bottom;
 char lineChar[20];
 
 // LQI gains matrix K (4x9)
-const float K[4][9] = {{0.0273, 0.0158, 0, 0, -1.2423, -0.7381, -0.0157, 0, 0.7069},
+//const float K[4][9] = {{0.0273, 0.0158, 0, 0, -1.2423, -0.7381, -0.0157, 0, 0.7069},
                         {-0.0273, -0.0158, 0, 0, 1.2423, 0.7381, 0.0157, 0, -0.7069},
                         {-1.2693, -0.7861, -1.3094, -0.8588, -0.0287, -0.0182, 0.7069, 0.7071, 0.0157},
                         {1.2693, 0.7861, -1.3094, -0.8588, 0.0287, 0.0182, -0.7069, 0.7071, -0.0157}};
@@ -1039,8 +1039,20 @@ static void LQI(void* pvParam)
 {
     TickType_t lastTaskTime = xTaskGetTickCount();
     const TickType_t delay_time = pdMS_TO_TICKS(LQI_PERIOD_MS);
-    float u[4] = {0, 0, 0, 0};
-    float x[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
+    float u[4] = {0, 0, 0, 0}; // thrust_right, thrust_left, servo_right, servo_left
+    
+    float Px = 1;
+    float Ix = 1;
+    float Dx = 1;
+    float Py = 1;
+    float Iy = 1;
+    float Dy = 1;
+    float Pz = 1;
+    float Iz = 1;
+    float Dz = 1;
+
+    float Tx, Ty, Tz; // output torques desired in x, y, and z axes
+    // x torque -> positive roll, y torque -> negative yaw, z torque -> positive pitch
     
     while(true)
     {
@@ -1074,34 +1086,18 @@ static void LQI(void* pvParam)
                 for (int i = 0; i < 4; i++) {
                     u[i] = 0;
                 }
-                x[0] = ypr[0];
-                x[1] = ypr_prime[0];
-                x[2] = ypr[1];
-                x[3] = ypr_prime[1];
-                x[4] = ypr[2];
-                x[5] = ypr_prime[2];
-                x[6] = ypr_accum[0];
-                x[7] = ypr_accum[1];
-                x[8] = ypr_accum[2];
-                // multiply by K matrix to obtain u
 
-                for (int i = 0; i < 4; i++) {
-                    for (int j = 0; j < 9; j++) {
-                        u[i] += K[i][j] * x[j] * -1;
-                    }
-                }
+                // run yaw, pitch, and roll PID controllers
+                Tx = (ypr_target[2] - ypr[2])*Px + ypr_accum[2]*Ix + ypr_prime[2]*Dx;
+                Ty = (ypr_target[0] - ypr[0])*Py + ypr_accum[0]*Iy + ypr_prime[0]*Dy;
+                Tz = (ypr_target[1] - ypr[1])*Pz + ypr_accum[1]*Iz + ypr_prime[1]*Dz;
+                
+                // TODO: Mixer to calculate thrusts and angles based on desired torques
+                _throttleLeft = ENGINE_PWM_MIN;
+                _throttleRight = ENGINE_PWM_MIN;
+                _servoLeft = SERVO_PWM_MID;
+                _servoRight = SERVO_PWM_MID;
 
-                // operate on u to get thrusts and angles
-                _throttleRight = ((u[0] / MAX_THRUST_N) 
-                    + (_cmdThrottlePercentage/100.0f)) 
-                    * (ENGINE_PWM_MAX - ENGINE_PWM_MIN) + ENGINE_PWM_MIN;
-                _throttleLeft = ((u[1] / MAX_THRUST_N) 
-                    + (_cmdThrottlePercentage/100.0f)) 
-                    * (ENGINE_PWM_MAX - ENGINE_PWM_MIN) + ENGINE_PWM_MIN;
-                _servoRight = u[2] / (u[0] * 1.570796f) * (SERVO_PWM_MAX - SERVO_PWM_MIN) 
-                    + SERVO_PWM_MID;
-                _servoLeft = u[3] / (u[1] * 1.570796f) * (SERVO_PWM_MAX - SERVO_PWM_MIN)
-                    + SERVO_PWM_MID;
                 break;
 
             case 4: //
@@ -1110,45 +1106,26 @@ static void LQI(void* pvParam)
                 _cmdThrottlePercentage -= 5/pdMS_TO_TICKS(1000) * pdMS_TO_TICKS(LQI_PERIOD_MS); // Decrease throttle by 0.05 (5%) per second
                 // update accumulator values
                 for (int i = 0; i < 3; i++) {
-                    //ypr_accum[i] += (ypr_target[i] - ypr[i]) * (float)(LQI_PERIOD_MS) / 1000.0f;
-                    ypr_accum[i] = 0;
+                    ypr_accum[i] += (ypr_target[i] - ypr[i]) * (float)(LQI_PERIOD_MS) / 1000.0f;
+                    //ypr_accum[i] = 0;
                 }
 
                 // first zero u
                 for (int i = 0; i < 4; i++) {
                     u[i] = 0;
                 }
-                x[0] = ypr[0];
-                x[1] = ypr_prime[0];
-                x[2] = ypr[1];
-                x[3] = ypr_prime[1];
-                x[4] = ypr[2];
-                x[5] = ypr_prime[2];
-                x[6] = ypr_accum[0];
-                x[7] = ypr_accum[1];
-                x[8] = ypr_accum[2];
-                // multiply by K matrix to obtain u
 
-                for (int i = 0; i < 4; i++) {
-                    for (int j = 0; j < 9; j++) {
-                        u[i] += K[i][j] * x[j] * -1;
-                    }
-                }
-
-                //ESP_LOGI("[LQI]", "X[0]: %0.1f, X[1]: %0.1f, X[2]: %0.1f, X[3]: %0.1f, X[4]: %0.1f, X[5]: %0.1f, X[6]: %0.1f, X[7]: %0.1f, X[8]: %0.1f", x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7], x[8]);
-                //ESP_LOGI("[LQI]", "ypr[0]: %0.1f, ypr[1]: %0.1f, ypr[2]: %0.1f", ypr[0], ypr[1], ypr[2]);
-                //ESP_LOGI("[LQI]", "ypr_old[0]: %0.1f, ypr_old[1]: %0.1f, ypr_old[2]: %0.1f", ypr_old[0], ypr_old[1], ypr_old[2]);
-                //ESP_LOGI("[LQI]", "ypr_prime[0]: %0.1f, ypr_prime[1]: %0.1f, ypr_prime[2]: %0.1f", ypr_prime[0], ypr_prime[1], ypr_prime[2]);
-                //ESP_LOGI("[LQI]", "U[0]: %0.1f, U[1]: %0.1f, U[2]: %0.1f, U[3]: %0.1f", u[0], u[1], u[2], u[3]);
-                ESP_LOGI("[LQI]", "_servoLeft: %0.1f, _servoRight: %0.1f", u[2] / (u[0] * 1.570796f), u[3] / (u[1] * 1.570796f));
-
-                // operate on u to get thrusts and angles
-                _throttleRight = ENGINE_PWM_MIN;
+                // run yaw, pitch, and roll PID controllers
+                Tx = (ypr_target[2] - ypr[2])*Px + ypr_accum[2]*Ix + ypr_prime[2]*Dx;
+                Ty = (ypr_target[0] - ypr[0])*Py + ypr_accum[0]*Iy + ypr_prime[0]*Dy;
+                Tz = (ypr_target[1] - ypr[1])*Pz + ypr_accum[1]*Iz + ypr_prime[1]*Dz;
+                
+                // TODO: Mixer to calculate thrusts and angles based on desired torques
                 _throttleLeft = ENGINE_PWM_MIN;
-                _servoRight = u[2] / (u[0] * 1.570796f) * (SERVO_PWM_MAX - SERVO_PWM_MIN) 
-                    + SERVO_PWM_MID;
-                _servoLeft = u[3] / (u[1] * 1.570796f) * (SERVO_PWM_MAX - SERVO_PWM_MIN)
-                    + SERVO_PWM_MID;
+                _throttleRight = ENGINE_PWM_MIN;
+                _servoLeft = SERVO_PWM_MID;
+                _servoRight = SERVO_PWM_MID;
+                
                 break;
             default:
                 // It should never reach this case...
