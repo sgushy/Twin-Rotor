@@ -10,7 +10,7 @@
 #define ESPNOW_WIFI_IF   WIFI_IF_AP
 #endif
 
-#define ESPNOW_QUEUE_SIZE           8
+#define ESPNOW_QUEUE_SIZE           32 // Expanded queue in an attempt to reduce "traffic jam" probability...
 
 #define IS_BROADCAST_ADDR(addr) (memcmp(addr, _remoteMACAddr, ESP_NOW_ETH_ALEN) == 0)
 

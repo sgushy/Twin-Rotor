@@ -861,11 +861,11 @@ static void esp_now_ping(void* param)
                 free(pingpacket);
             break;
             case 2: // In case 2, we do not ping at all, waiting for player input by pulling the trigger...
-                delay_time = pdMS_TO_TICKS(150);
+                delay_time = pdMS_TO_TICKS(74);
             break;
             case 3: // In state 3, we are connected to the remote, so we will actively send remote control packets to the airplane
             case 4:
-                delay_time = pdMS_TO_TICKS(75);
+                delay_time = pdMS_TO_TICKS(74);
 
                 while(xQueueReceive(remote_conn_queue, &evt, 0) == pdTRUE) // First: see if we have already received any ping messages
                 {
@@ -1033,6 +1033,21 @@ void parseInput() // The input parsing test function
             
             case 1:
                 ESP_LOGI("BTN","TRIGGER");
+                
+                bool uniqueMADDR = false; // We require a check to make sure that a MAC address actually exists...
+                for(int ii = 0; ii < ESP_NOW_ETH_ALEN; ii++)
+                {
+                    if(_aircraftMACAddr[ii] != 0xFF && _aircraftMACAddr[ii] != 0x0)
+                    {
+                        uniqueMADDR = true;
+                    }
+                }
+                if(!uniqueMADDR)
+                {
+                    ESP_LOGE("ESPN","MAC ADDRESS INVALID! Cancelling!");
+                    break;
+                }
+
                 SendConnectionPacket();
                 break;
 
@@ -1048,11 +1063,11 @@ void parseInput() // The input parsing test function
                 ESP_LOGI("BTN","[4]");
                 break;
 
-            case 10:
+            case 16:
                 ESP_LOGI("BTN","[5]");
                 break;
 
-            case 20:
+            case 32:
                 ESP_LOGI("BTN","[6]");
                 break;
             default:
@@ -1095,6 +1110,20 @@ void AircraftPairingSelection(uint8_t *macAddrTemp)
         switch (last_stick_report.buttons_a)
         {
             case 1: // On trigger pull, send a reconnect packet
+                bool uniqueMADDR = false; // We require a check to make sure that a MAC address actually exists...
+                for(int ii = 0; ii < ESP_NOW_ETH_ALEN; ii++)
+                {
+                    if(macAddrTemp[ii] != 0xFF && macAddrTemp[ii] != 0x0)
+                    {
+                        uniqueMADDR = true;
+                    }
+                }
+                if(!uniqueMADDR)
+                {
+                    ESP_LOGE("ESPN","MAC ADDRESS INVALID! Cancelling!");
+                    break;
+                }
+
                 for(int ii = 0; ii < ESP_NOW_ETH_ALEN; ii++)
                 {
                     _aircraftMACAddr[ii] = macAddrTemp[ii];
@@ -1120,12 +1149,12 @@ void AircraftPairingSelection(uint8_t *macAddrTemp)
     lastButtonPress = last_stick_report.buttons_a;
 }
 
-/// @brief Check connection to remote control (Every 25 ms) 
+/// @brief Check connection to remote control (Every 96 ms) 
 /// @param pvParam 
 static void remote_conn(void* pvParam)
 {
     TickType_t lastTaskTime = xTaskGetTickCount();
-    const TickType_t delay_time = pdMS_TO_TICKS(25);
+    const TickType_t delay_time = pdMS_TO_TICKS(96);
 
     TaskHandle_t search_for_remote_task=NULL; // The esp_now_ping task
 
@@ -1145,7 +1174,7 @@ static void remote_conn(void* pvParam)
                 }
                 break;
             case 1:
-                //parseInput(); 
+                parseInput(); 
                 //In case 1, we wait for the pingback task to give us a connection to a flight controller
                 //In the meantime, we do nothing...
                 break;
@@ -1216,10 +1245,10 @@ static void usb_core_task(void* p)
     };
 
     ESP_LOGI("AAAAAA", "HID HOST 5example");
-    vTaskDelay(pdMS_TO_TICKS(105));
+    vTaskDelay(pdMS_TO_TICKS(88));
     
     ESP_ERROR_CHECK( hid_host_install(&hid_host_config) );
-    vTaskDelay(pdMS_TO_TICKS(105));
+    vTaskDelay(pdMS_TO_TICKS(88));
     
     ESP_LOGI("AAAAAA", "HID HOST 6example");
 
