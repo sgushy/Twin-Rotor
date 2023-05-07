@@ -1033,6 +1033,35 @@ static void IMU(void* pvParam)
     vTaskDelete(NULL);
 }
 
+/// @brief arcsin approximation
+/// @param x
+/// @return arcsin output
+static float arcsin(x) {
+    // 7th order Taylor polynomial approximation
+    float square = x*x;
+    float cube = square*x;
+    float fifth = cube*square;
+    float seventh = fifth*square;
+    return x + (1.0f/6.0f)*cube + (3.0f/40.0f)*fifth + (15.0f/336.0f)*seventh;
+}
+
+/// @brief Trim outputs for PWM use
+/// @param minPWM 
+/// @param maxPWM 
+/// @param input 
+/// @param minInput 
+/// @param maxInput 
+/// @return PWM duty cycle 
+static int clipPWM(int minPWM, int maxPWM, float input, float minInput, float maxInput) {
+    if (input < minInput) {
+        return minPWM;
+    } else if (input > maxInput) {
+        return maxPWM;
+    } else {
+        return (input - minInput) / (maxInput - minInput) * (maxPWM - minPWM) + minPWM;
+    }
+}
+
 /// @brief LQI controller
 /// @param pvParam 
 static void LQI(void* pvParam)
@@ -1042,17 +1071,20 @@ static void LQI(void* pvParam)
     float u[4] = {0, 0, 0, 0}; // thrust_right, thrust_left, servo_right, servo_left
     
     float Px = 1;
-    float Ix = 1;
-    float Dx = 1;
+    float Ix = 0;
+    float Dx = 0;
     float Py = 1;
-    float Iy = 1;
-    float Dy = 1;
+    float Iy = 0;
+    float Dy = 0;
     float Pz = 1;
-    float Iz = 1;
-    float Dz = 1;
+    float Iz = 0;
+    float Dz = 0;
 
     float Tx, Ty, Tz; // output torques desired in x, y, and z axes
     // x torque -> positive roll, y torque -> negative yaw, z torque -> positive pitch
+
+    float T1_cl, T2_cl, T1, T2;
+    float theta1, theta2;
     
     while(true)
     {
@@ -1092,11 +1124,20 @@ static void LQI(void* pvParam)
                 Ty = (ypr_target[0] - ypr[0])*Py + ypr_accum[0]*Iy + ypr_prime[0]*Dy;
                 Tz = (ypr_target[1] - ypr[1])*Pz + ypr_accum[1]*Iz + ypr_prime[1]*Dz;
                 
-                // TODO: Mixer to calculate thrusts and angles based on desired torques
-                _throttleLeft = ENGINE_PWM_MIN;
-                _throttleRight = ENGINE_PWM_MIN;
-                _servoLeft = SERVO_PWM_MID;
-                _servoRight = SERVO_PWM_MID;
+                // Mixer to calculate thrusts and angles based on desired torques
+                T2_cl = Tx/(0.25138f);
+                T1_cl = -1*T2_cl;
+                T2 = T2_cl + _cmdThrottlePercentage / 100 * MAX_THRUST_N;
+                T1 = T1_cl + _cmdThrottlePercentage / 100 * MAX_THRUST_N;
+
+                theta1 = arcsin(Ty/(T1*0.25138f) - Tz/(T1*0.10262f));
+                theta2 = arcsin(-Ty/(T2*0.25138f) - Tz/(T2*0.10262f));
+
+                _throttleLeft = trimPWM(ENGINE_PWM_MIN, ENGINE_PWM_MAX, T2, 0, MAX_THRUST_N);
+                _throttleRight = trimPWM(ENGINE_PWM_MIN, ENGINE_PWM_MAX, T1, 0, MAX_THRUST_N);
+                // 1.571 is pi / 2
+                _servoLeft = trimPWM(SERVO_PWM_MIN, SERVO_PWM_MAX, theta2, -1.571f, 1.571f);
+                _servoRight = trimPWM(SERVO_PWM_MIN, SERVO_PWM_MAX, theta1, -1.571f, 1.571f);
 
                 break;
 
@@ -1120,11 +1161,20 @@ static void LQI(void* pvParam)
                 Ty = (ypr_target[0] - ypr[0])*Py + ypr_accum[0]*Iy + ypr_prime[0]*Dy;
                 Tz = (ypr_target[1] - ypr[1])*Pz + ypr_accum[1]*Iz + ypr_prime[1]*Dz;
                 
-                // TODO: Mixer to calculate thrusts and angles based on desired torques
-                _throttleLeft = ENGINE_PWM_MIN;
-                _throttleRight = ENGINE_PWM_MIN;
-                _servoLeft = SERVO_PWM_MID;
-                _servoRight = SERVO_PWM_MID;
+                // Mixer to calculate thrusts and angles based on desired torques
+                T2_cl = Tx/(0.25138f);
+                T1_cl = -1*T2_cl;
+                T2 = T2_cl + _cmdThrottlePercentage / 100 * MAX_THRUST_N;
+                T1 = T1_cl + _cmdThrottlePercentage / 100 * MAX_THRUST_N;
+
+                theta1 = arcsin(Ty/(T1*0.25138f) - Tz/(T1*0.10262f));
+                theta2 = arcsin(-Ty/(T2*0.25138f) - Tz/(T2*0.10262f));
+
+                _throttleLeft = trimPWM(ENGINE_PWM_MIN, ENGINE_PWM_MAX, T2, 0, MAX_THRUST_N);
+                _throttleRight = trimPWM(ENGINE_PWM_MIN, ENGINE_PWM_MAX, T1, 0, MAX_THRUST_N);
+                // 1.571 is pi / 2
+                _servoLeft = trimPWM(SERVO_PWM_MIN, SERVO_PWM_MAX, theta2, -1.571f, 1.571f);
+                _servoRight = trimPWM(SERVO_PWM_MIN, SERVO_PWM_MAX, theta1, -1.571f, 1.571f);
                 
                 break;
             default:
