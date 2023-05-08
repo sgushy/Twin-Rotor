@@ -50,6 +50,8 @@
 #define ENGINE_PWM_MAX              6554 // 10% of 2^16, corresponds to full throttle (2 ms pulse width)
 #define ENGINE_PWM_MIN              3277 // 5% of 2^16, corresponds to no throttle (1 ms pulse width)
 
+#define THIRTY_DEG                      0.52359f
+
 // Prepare and then apply the LEDC PWM timer configuration
 ledc_timer_config_t pwm_timer = {
     .speed_mode       = LEDC_MODE,
@@ -136,10 +138,11 @@ int center, top, bottom;
 char lineChar[20];
 
 // LQI gains matrix K (4x9)
-//const float K[4][9] = {{0.0273, 0.0158, 0, 0, -1.2423, -0.7381, -0.0157, 0, 0.7069},
+/**const float K[4][9] = {{0.0273, 0.0158, 0, 0, -1.2423, -0.7381, -0.0157, 0, 0.7069},
                         {-0.0273, -0.0158, 0, 0, 1.2423, 0.7381, 0.0157, 0, -0.7069},
                         {-1.2693, -0.7861, -1.3094, -0.8588, -0.0287, -0.0182, 0.7069, 0.7071, 0.0157},
                         {1.2693, 0.7861, -1.3094, -0.8588, 0.0287, 0.0182, -0.7069, 0.7071, -0.0157}};
+                        **/
 
 // Current angle targets (provided by ground station)
 float ypr_target[3] = {0, 0, 0};
@@ -1036,7 +1039,7 @@ static void IMU(void* pvParam)
 /// @brief arcsin approximation
 /// @param x
 /// @return arcsin output
-static float arcsin(x) {
+static float arcsin(float x) {
     // 7th order Taylor polynomial approximation
     float square = x*x;
     float cube = square*x;
@@ -1060,6 +1063,21 @@ static int clipPWM(int minPWM, int maxPWM, float input, float minInput, float ma
     } else {
         return (input - minInput) / (maxInput - minInput) * (maxPWM - minPWM) + minPWM;
     }
+}
+
+/// @brief Integrator anti-windup 
+/// @param curr_val
+/// @param add
+/// @param limit
+/// @return next_val
+static float anti_windup(float curr_val, float add, float limit) {
+    if (curr_val + add > limit) {
+        return curr_val;
+    } 
+    if (curr_val + add < -1*limit) {
+        return curr_val;
+    }
+    return curr_val + add;
 }
 
 /// @brief LQI controller
@@ -1111,7 +1129,8 @@ static void LQI(void* pvParam)
                 // Fly state
                 // update accumulator values
                 for (int i = 0; i < 3; i++) {
-                    ypr_accum[i] += (ypr_target[i] - ypr[i]) * (float)(LQI_PERIOD_MS) / 1000.0f;
+                    ypr_accum[i] = anti_windup(ypr_accum[i], (ypr_target[i] - ypr[i]) * 
+                        (float)(LQI_PERIOD_MS) / 1000.0f, THIRTY_DEG/2);
                 }
 
                 // first zero u
@@ -1133,11 +1152,23 @@ static void LQI(void* pvParam)
                 theta1 = arcsin(Ty/(T1*0.25138f) - Tz/(T1*0.10262f));
                 theta2 = arcsin(-Ty/(T2*0.25138f) - Tz/(T2*0.10262f));
 
-                _throttleLeft = trimPWM(ENGINE_PWM_MIN, ENGINE_PWM_MAX, T2, 0, MAX_THRUST_N);
-                _throttleRight = trimPWM(ENGINE_PWM_MIN, ENGINE_PWM_MAX, T1, 0, MAX_THRUST_N);
+                // Clip angles to +/- 30 degrees
+                if (theta1 > THIRTY_DEG) {
+                    theta1 = THIRTY_DEG;
+                } else if (theta1 < -1*THIRTY_DEG) {
+                    theta1 = -1*THIRTY_DEG;
+                }
+                if (theta2 > THIRTY_DEG) {
+                    theta2 = THIRTY_DEG;
+                } else if (theta2 < -1*THIRTY_DEG) {
+                    theta2 = -1*THIRTY_DEG;
+                }
+
+                _throttleLeft = clipPWM(ENGINE_PWM_MIN, ENGINE_PWM_MAX, T2, 0, MAX_THRUST_N);
+                _throttleRight = clipPWM(ENGINE_PWM_MIN, ENGINE_PWM_MAX, T1, 0, MAX_THRUST_N);
                 // 1.571 is pi / 2
-                _servoLeft = trimPWM(SERVO_PWM_MIN, SERVO_PWM_MAX, theta2, -1.571f, 1.571f);
-                _servoRight = trimPWM(SERVO_PWM_MIN, SERVO_PWM_MAX, theta1, -1.571f, 1.571f);
+                _servoLeft = clipPWM(SERVO_PWM_MIN, SERVO_PWM_MAX, theta2, -1.571f, 1.571f);
+                _servoRight = clipPWM(SERVO_PWM_MIN, SERVO_PWM_MAX, theta1, -1.571f, 1.571f);
 
                 break;
 
@@ -1167,14 +1198,26 @@ static void LQI(void* pvParam)
                 T2 = T2_cl + _cmdThrottlePercentage / 100 * MAX_THRUST_N;
                 T1 = T1_cl + _cmdThrottlePercentage / 100 * MAX_THRUST_N;
 
-                theta1 = arcsin(Ty/(T1*0.25138f) - Tz/(T1*0.10262f));
+                theta1 = -1*arcsin(Ty/(T1*0.25138f) - Tz/(T1*0.10262f));
                 theta2 = arcsin(-Ty/(T2*0.25138f) - Tz/(T2*0.10262f));
 
-                _throttleLeft = trimPWM(ENGINE_PWM_MIN, ENGINE_PWM_MAX, T2, 0, MAX_THRUST_N);
-                _throttleRight = trimPWM(ENGINE_PWM_MIN, ENGINE_PWM_MAX, T1, 0, MAX_THRUST_N);
+                // Clip angles to +/- 30 degrees
+                if (theta1 > THIRTY_DEG) {
+                    theta1 = THIRTY_DEG;
+                } else if (theta1 < -1*THIRTY_DEG) {
+                    theta1 = -1*THIRTY_DEG;
+                }
+                if (theta2 > THIRTY_DEG) {
+                    theta2 = THIRTY_DEG;
+                } else if (theta2 < -1*THIRTY_DEG) {
+                    theta2 = -1*THIRTY_DEG;
+                }
+
+                _throttleLeft = clipPWM(ENGINE_PWM_MIN, ENGINE_PWM_MAX, T2, 0, MAX_THRUST_N);
+                _throttleRight = clipPWM(ENGINE_PWM_MIN, ENGINE_PWM_MAX, T1, 0, MAX_THRUST_N);
                 // 1.571 is pi / 2
-                _servoLeft = trimPWM(SERVO_PWM_MIN, SERVO_PWM_MAX, theta2, -1.571f, 1.571f);
-                _servoRight = trimPWM(SERVO_PWM_MIN, SERVO_PWM_MAX, theta1, -1.571f, 1.571f);
+                _servoLeft = clipPWM(SERVO_PWM_MIN, SERVO_PWM_MAX, theta2, -1.571f, 1.571f);
+                _servoRight = clipPWM(SERVO_PWM_MIN, SERVO_PWM_MAX, theta1, -1.571f, 1.571f);
                 
                 break;
             default:
